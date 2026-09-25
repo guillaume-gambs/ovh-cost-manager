@@ -1466,9 +1466,11 @@ const cloudDetailOps = {
    * bill line carries everything worth showing:
    *   "Savings plan (id : savings-plan-3xc3-4_node_k8s) pour 3 instance(s) c3-4 - Durée : 1M"
    *
-   * `covered` is how many instances the plan pays for, `inventory` how many
-   * instances of that flavor actually exist: a plan covering more than what
-   * runs is money burnt, fewer means the surplus is billed at the hourly rate.
+   * `covered` is how many instances the plan pays for, `flavor_covered` the
+   * same summed over every plan of that flavor, and `inventory` how many
+   * instances of that flavor actually exist. Coverage is read per flavor:
+   * plans paying for more than what runs is money burnt, fewer means the
+   * surplus is billed at the hourly rate.
    */
   getSavingsPlansByProject: (projectId, fromDate, toDate) => {
     const db = getDb();
@@ -1490,7 +1492,7 @@ const cloudDetailOps = {
       'SELECT plan_code, flavor FROM cloud_instances WHERE project_id = ?'
     ).all(projectId);
 
-    return lines.map(line => {
+    const plans = lines.map(line => {
       const id = line.description.match(/\(id\s*:\s*([^)]+)\)/i)?.[1]?.trim() || null;
       const covered = parseInt(line.description.match(/pour\s+(\d+)\s+instance/i)?.[1] || '0', 10);
       const flavor = line.description.match(/instance\(s\)\s+(\S+)/i)?.[1] || null;
@@ -1511,7 +1513,19 @@ const cloudDetailOps = {
         last_date: line.last_date,
         total: line.total
       };
-    }).sort((a, b) => b.total - a.total);
+    });
+
+    // Two plans of 3 and 2 c3-4 over 4 running c3-4 each look fine on their
+    // own: only their sum shows the over-coverage
+    const coveredByFlavor = new Map();
+    for (const plan of plans) {
+      const key = normalizeFlavor(plan.flavor);
+      if (key) coveredByFlavor.set(key, (coveredByFlavor.get(key) || 0) + plan.covered);
+    }
+
+    return plans
+      .map(plan => ({ ...plan, flavor_covered: coveredByFlavor.get(normalizeFlavor(plan.flavor)) ?? null }))
+      .sort((a, b) => b.total - a.total);
   },
 
   upsertBucket: (bucket) => {

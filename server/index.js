@@ -1277,6 +1277,7 @@ function registerRoutes() {
         flavor: p.flavor,
         duration: p.duration,
         covered: p.covered,
+        flavorCovered: p.flavor_covered,
         inventory: p.inventory,
         months: p.months,
         firstDate: p.first_date,

@@ -109,3 +109,21 @@ describe('instance cost', () => {
     expect(instances.reduce((sum, i) => sum + (i.total || 0), 0)).toBeCloseTo(16.75, 2);
   });
 });
+
+describe('savings plans', () => {
+  test('sums the instances paid by every plan of a flavor against that flavor\'s inventory', () => {
+    for (const id of ['k1', 'k2', 'k3', 'k4']) seedInstance({ id, plan_code: 'c3-4' });
+    for (const id of ['b1', 'b2']) seedInstance({ id, plan_code: 'b3-8' });
+    seedBillLine('Savings plan (id : savings-plan-3xc3-4_node_k8s) pour 3 instance(s) c3-4 - Durée : 1M', 90);
+    seedBillLine('Savings plan (id : savings-plan-2xc3-4) pour 2 instance(s) c3-4 - Durée : 1M', 60);
+    seedBillLine('Savings plan (id : savings-plan-1xb3-8) pour 1 instance(s) b3-8 - Durée : 1M', 20);
+
+    const plans = db.cloudDetails.getSavingsPlansByProject(PROJECT, FROM, TO);
+
+    expect(plans.map(p => [p.id, p.covered, p.flavor_covered, p.inventory])).toEqual([
+      ['savings-plan-3xc3-4_node_k8s', 3, 5, 4],
+      ['savings-plan-2xc3-4', 2, 5, 4],
+      ['savings-plan-1xb3-8', 1, 1, 2]
+    ]);
+  });
+});

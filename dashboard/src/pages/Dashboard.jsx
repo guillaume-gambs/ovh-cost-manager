@@ -162,7 +162,8 @@ const SavingsPlansTable = ({ plans, language, fmt }) => (
     </thead>
     <tbody>
       {plans.map((plan, i) => {
-        const over = plan.inventory !== null && plan.covered > plan.inventory;
+        // Coverage is per flavor: all the plans of that flavor, summed
+        const over = plan.inventory !== null && plan.flavorCovered > plan.inventory;
         return (
           <tr key={plan.id || i} className="border-b hover:bg-gray-50">
             <td className="p-2 font-medium text-xs truncate max-w-[220px]" title={plan.id}>{plan.id}</td>
@@ -172,13 +173,13 @@ const SavingsPlansTable = ({ plans, language, fmt }) => (
                 className={`px-1.5 py-0.5 rounded ${over ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'}`}
                 title={over
                   ? (language === 'en'
-                    ? 'The plan pays for more instances than the project runs'
-                    : 'Le plan paie plus d\'instances que le projet n\'en fait tourner')
+                    ? 'The plans of this flavor pay for more instances than the project runs'
+                    : 'Les plans de ce flavor paient plus d\'instances que le projet n\'en fait tourner')
                   : (language === 'en'
-                    ? 'Instances paid by the plan / instances of that flavor in the inventory'
-                    : 'Instances payées par le plan / instances de ce flavor dans l\'inventaire')}
+                    ? 'Instances paid by all the plans of this flavor / instances of that flavor in the inventory'
+                    : 'Instances payées par tous les plans de ce flavor / instances de ce flavor dans l\'inventaire')}
               >
-                {plan.covered}{plan.inventory !== null ? ` / ${plan.inventory}` : ''}
+                {plan.inventory !== null ? `${plan.flavorCovered} / ${plan.inventory}` : plan.covered}
               </span>
             </td>
             <td className="p-2 text-xs text-gray-500">{plan.lastDate || '-'}</td>
@@ -194,6 +195,7 @@ const savingsPlanCsvColumns = (language) => [
   { key: 'id', label: 'Plan' },
   { key: 'flavor', label: 'Flavor' },
   { key: 'covered', label: language === 'en' ? 'Instances covered' : 'Instances couvertes' },
+  { key: 'flavorCovered', label: language === 'en' ? 'Instances covered (flavor total)' : 'Instances couvertes (total du flavor)' },
   { key: 'inventory', label: language === 'en' ? 'Instances in inventory' : 'Instances en inventaire' },
   { key: 'duration', label: language === 'en' ? 'Duration' : 'Durée' },
   { key: 'months', label: language === 'en' ? 'Billed months' : 'Mois facturés' },
