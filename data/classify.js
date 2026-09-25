@@ -186,23 +186,26 @@ function classifyWebCloud(description, domain = '') {
   const desc = (description || '').toLowerCase();
   if (!desc) return null;
 
-  // "example.com - Zone DNS - Renouvellement"
-  if (desc.includes('zone dns') || desc.includes('dns zone')) return 'dns_zone';
+  // "example.com - Zone DNS - Renouvellement", DNS Anycast
+  if (desc.includes('zone dns') || desc.includes('dns zone') || desc.includes('dns anycast')) return 'dns_zone';
 
-  // "example.com - .tech demande de renouvellement - 12 mois"
-  if (/demande de renouvellement/.test(desc) || /domain (renewal|registration)/.test(desc)) return 'domain';
+  // "example.com - .tech demande de renouvellement - 12 mois", "example.com - .com création - 12 mois"
+  if (/demande de renouvellement/.test(desc) || /domain (renewal|registration)/.test(desc) ||
+      /\.[a-z]+ (création|creation|transfert|transfer)/.test(desc)) return 'domain';
 
-  // MX plan, email options tied to a hosting
+  // MX plan, Email Pro, Zimbra, email options tied to a hosting
   if (desc.includes('mx plan') || desc.includes('exchange') ||
+      desc.includes('email pro') || desc.includes('zimbra') ||
       desc.includes('option email') || desc.includes('email option')) return 'email';
 
-  // Hosting add-ons: databases, CDN, redirections
+  // Hosting add-ons: databases, CDN, redirections, SSL certificates
   if (desc.includes('sql option') || desc.includes('sql privé') || desc.includes('sql prive') ||
+      desc.includes('private sql') || desc.includes('ssl certificate') ||
       desc.includes('cdn ') || desc.startsWith('redirection') ||
       (domain || '').includes('-optional-')) return 'option';
 
   // Web hosting plans. OVH names them after the offer, hence the explicit list.
-  if (/\b(performance|pro|perso|personal|starter|freedom|kimsufi)\b/.test(desc) &&
+  if (/\b(performance|pro|perso|personal|starter|freedom)\b/.test(desc) &&
       /(renewal|rental|renouvellement|hosting|hébergement|hebergement)/.test(desc)) return 'hosting';
   if (desc.includes('hosting') || desc.includes('hébergement') || desc.includes('hebergement')) return 'hosting';
 

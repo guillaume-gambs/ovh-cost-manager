@@ -24,12 +24,23 @@ describe('classifyWebCloud', () => {
       expect(classifyWebCloud('example.com domain renewal')).toBe('domain');
       expect(classifyWebCloud('example.com domain registration')).toBe('domain');
     });
+
+    test('classifies creations and transfers', () => {
+      expect(classifyWebCloud('example.com - .com création - 12 mois')).toBe('domain');
+      expect(classifyWebCloud('example.fr - .fr transfert - 12 mois')).toBe('domain');
+      expect(classifyWebCloud('example.net - .net creation - 12 months')).toBe('domain');
+      expect(classifyWebCloud('example.org - .org transfer - 12 months')).toBe('domain');
+    });
   });
 
   describe('DNS zones', () => {
     test('classifies zone renewals', () => {
       expect(classifyWebCloud('example.com - Zone DNS - Renouvellement')).toBe('dns_zone');
       expect(classifyWebCloud('example.com DNS zone rental')).toBe('dns_zone');
+    });
+
+    test('classifies DNS Anycast', () => {
+      expect(classifyWebCloud('example.com - DNS Anycast - 12 mois')).toBe('dns_zone');
     });
 
     // A zone line also says "Renouvellement", so the zone test has to win
@@ -53,6 +64,12 @@ describe('classifyWebCloud', () => {
       expect(classifyWebCloud('MX plan account rental for 12 months')).toBe('email');
       expect(classifyWebCloud("Renouvellement de l'option email (5 comptes) liée à l'hébergement example.com")).toBe('email');
     });
+
+    // "Pro" is also a hosting offer, the mail offers named after it must win
+    test('classifies Email Pro and Zimbra accounts', () => {
+      expect(classifyWebCloud('Email Pro account rental for 12 months')).toBe('email');
+      expect(classifyWebCloud('Zimbra Pro account rental for 1 month')).toBe('email');
+    });
   });
 
   describe('hosting options', () => {
@@ -61,6 +78,11 @@ describe('classifyWebCloud', () => {
       expect(classifyWebCloud('Renouvellement du SQL privé vp1-1')).toBe('option');
       expect(classifyWebCloud('CDN basic option rental for 12 months')).toBe('option');
       expect(classifyWebCloud('Redirection Redirection')).toBe('option');
+    });
+
+    test('classifies SSL certificates and Private SQL', () => {
+      expect(classifyWebCloud('SSL certificate Sectigo DV for example.com - 12 months')).toBe('option');
+      expect(classifyWebCloud('Private SQL 512 MB rental for 12 months')).toBe('option');
     });
 
     test('uses the domain suffix when the wording is ambiguous', () => {
@@ -74,6 +96,7 @@ describe('classifyWebCloud', () => {
       expect(classifyWebCloud('Forfait mensuel pour une instance eg-30')).toBeNull();
       expect(classifyWebCloud('Stockage Standard - Bucket my-bucket sur la région gra')).toBeNull();
       expect(classifyWebCloud('IP Load Balancer zone RBX 1 month rental')).toBeNull();
+      expect(classifyWebCloud('Kimsufi KS-1 rental for 1 month')).toBeNull();
     });
 
     test('returns null for empty input', () => {
