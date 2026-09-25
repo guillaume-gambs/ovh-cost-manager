@@ -726,14 +726,22 @@ function registerRoutes() {
   // overlapping a run already in progress.
   app.post('/api/import/run', importLimiter, (req, res) => {
     try {
+      // IMPORT_ENABLED=false turns off manual imports as well as the cron
+      if (process.env.IMPORT_ENABLED === 'false') {
+        return res.status(409).json({ error: 'syncDisabled' });
+      }
       if (db.importLog.isRunning()) {
         return res.status(409).json({ error: 'syncRunning' });
       }
 
+      // Same options as the cron (scripts/cron-import.sh): --diff plus
+      // IMPORT_FLAGS split on spaces, --all by default
+      const flags = (process.env.IMPORT_FLAGS || '--all').split(/\s+/).filter(Boolean);
       const importScript = path.resolve(__dirname, '..', 'data', 'import.js');
-      const child = spawn(process.execPath, [importScript, '--diff', '--all'], {
+      const child = spawn(process.execPath, [importScript, '--diff', ...flags], {
         detached: true,
-        stdio: 'ignore',
+        // Keep the import output, errors included, in the server logs
+        stdio: ['ignore', 'inherit', 'inherit'],
         env: process.env
       });
       child.on('error', (err) => console.error('Manual import spawn failed:', err.message));

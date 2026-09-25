@@ -330,6 +330,7 @@ export default function Dashboard() {
     onError: (err) => {
       const status = err?.response?.status;
       const key = status === 429 ? 'syncRateLimited'
+        : err?.response?.data?.error === 'syncDisabled' ? 'syncDisabled'
         : status === 409 ? 'syncRunning'
         : 'syncError';
       setSyncFeedback({ type: 'error', msg: t(key) });
