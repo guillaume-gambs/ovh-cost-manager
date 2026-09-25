@@ -1,11 +1,15 @@
 /**
- * Tests for Web Cloud bill line classification
+ * Tests for Web Cloud bill line classification, and for the Web Cloud items
+ * built from the bill lines stored in the database.
  *
  * The wordings below are OVH bill descriptions, French and English mixed, as
  * they appear on the same account. Domain names use the RFC 2606 reserved
  * examples: only the wording around them matters to the classifier.
  */
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { classifyWebCloud } = require('../data/classify');
 
 describe('classifyWebCloud', () => {
@@ -77,5 +81,62 @@ describe('classifyWebCloud', () => {
       expect(classifyWebCloud(null)).toBeNull();
       expect(classifyWebCloud(undefined)).toBeNull();
     });
+  });
+});
+
+describe('webCloud items and summary', () => {
+  const FROM = '2026-01-01';
+  const TO = '2026-12-31';
+  let db;
+  let dataDir;
+
+  const line = (id, domain, description, price, resourceType) => ({
+    id,
+    bill_id: 'FR0001',
+    project_id: null,
+    domain,
+    description,
+    quantity: 1,
+    unit_price: price,
+    total_price: price,
+    service_type: 'Other',
+    resource_type: resourceType
+  });
+
+  beforeAll(() => {
+    // data/db.js reads DATA_DIR once, when it is first required
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ovh-webcloud-'));
+    process.env.DATA_DIR = dataDir;
+    db = require('../data/db');
+
+    db.bills.upsert({
+      id: 'FR0001', date: '2026-03-15', price_without_tax: 40.5, price_with_tax: 48.6,
+      tax: 8.1, currency: 'EUR', pdf_url: null, html_url: null
+    });
+    db.details.insertMany([
+      line('L1', 'example.com', 'example.com - .com demande de renouvellement - 12 mois', 10.5, 'domain'),
+      line('L2', 'example.net', 'example.net - .net restauration - 12 mois', 20, 'domain'),
+      line('L3', 'example.ovh', 'Frais de mise en service', 3, 'web_cloud'),
+      line('L4', 'misc-service-1', 'Frais de gestion', 7, 'other')
+    ]);
+  });
+
+  afterAll(() => {
+    db.closeDb();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  // The Infrastructure tab leaves both types out: Web Cloud is the only place
+  // these lines show up
+  test('files unrecognised domain lines under domain, web_cloud ones under option', () => {
+    expect(db.webCloud.getItems(FROM, TO)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'example.net', category: 'domain', total: 20 }),
+      expect.objectContaining({ name: 'example.ovh', category: 'option', total: 3 })
+    ]));
+  });
+
+  // 10.5 + 20 + 3: the unrecognised 'other' line stays in the Infrastructure tab
+  test('adds up every domain and web_cloud line, but no unrecognised other line', () => {
+    expect(db.webCloud.getSummary(FROM, TO).total).toBe(33.5);
   });
 });

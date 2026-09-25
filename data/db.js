@@ -1166,16 +1166,22 @@ const webCloudOps = {
       SELECT d.domain as domain,
              d.description as description,
              d.total_price as price,
-             b.date as date
+             b.date as date,
+             COALESCE(d.resource_type, 'other') as resource_type
       FROM bill_details d
       JOIN bills b ON d.bill_id = b.id
       WHERE b.date >= ? AND b.date <= ?
         AND COALESCE(d.resource_type, 'other') IN ('domain', 'other', 'web_cloud')
     `).all(fromDate, toDate);
 
+    // The Infrastructure tab leaves the 'domain' and 'web_cloud' types out, so
+    // a line of those types the wording does not place still lands here. An
+    // unrecognised 'other' line stays in the Infrastructure tab only.
+    const fallback = { domain: 'domain', web_cloud: 'option' };
+
     const byService = new Map();
     for (const row of rows) {
-      const category = classifyWebCloud(row.description, row.domain);
+      const category = classifyWebCloud(row.description, row.domain) || fallback[row.resource_type];
       if (!category) continue;
 
       // A domain and its DNS zone share the same `domain` value, so the family
