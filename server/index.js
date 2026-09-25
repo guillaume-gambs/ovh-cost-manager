@@ -714,6 +714,8 @@ function registerRoutes() {
 
       res.json({
         latest,
+        // Same rule as the resync route; the dashboard polls while it is true
+        running: db.importLog.isRunning(),
         history: all
       });
     } catch (err) {

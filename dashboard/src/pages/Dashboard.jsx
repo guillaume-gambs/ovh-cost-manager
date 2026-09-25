@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -60,6 +60,23 @@ const monthsSince = (yearMonth) => {
   if (!y || !m) return 0;
   const now = new Date();
   return (now.getFullYear() - y) * 12 + (now.getMonth() + 1 - m) + 1;
+};
+
+// SQLite CURRENT_TIMESTAMP values ('YYYY-MM-DD HH:MM:SS') are UTC without a
+// timezone suffix: parse them as UTC so they display in local time.
+const parseSqliteDate = (value) => new Date(`${value.replace(' ', 'T')}Z`);
+
+// Translation keys for the import_log type and status values
+const IMPORT_TYPE_KEYS = {
+  full: 'importTypeFull',
+  period: 'importTypePeriod',
+  differential: 'importTypeDifferential'
+};
+const IMPORT_STATUS_KEYS = {
+  running: 'importStatusRunning',
+  success: 'importStatusSuccess',
+  failed: 'importStatusFailed',
+  partial: 'importStatusPartial'
 };
 
 // Generate markdown report
@@ -314,7 +331,9 @@ export default function Dashboard() {
 
   const { data: importStatus } = useQuery({
     queryKey: ['importStatus'],
-    queryFn: fetchImportStatus
+    queryFn: fetchImportStatus,
+    // Poll while an import is in progress so the footer follows it
+    refetchInterval: (query) => (query.state.data?.running ? 5000 : false)
   });
 
   // Manual resync
@@ -336,6 +355,21 @@ export default function Dashboard() {
       setSyncFeedback({ type: 'error', msg: t(key) });
     }
   });
+
+  // Once the latest import has finished, refresh every query built from
+  // imported data (all of them but config, user and the import status).
+  const latestImport = importStatus?.latest;
+  const previousImport = useRef(latestImport);
+  useEffect(() => {
+    const previous = previousImport.current;
+    previousImport.current = latestImport;
+    if (!previous || !latestImport || latestImport.status === 'running') return;
+    if (previous.id !== latestImport.id || previous.status === 'running') {
+      queryClient.invalidateQueries({
+        predicate: (query) => !['config', 'user', 'importStatus'].includes(query.queryKey[0])
+      });
+    }
+  }, [latestImport, queryClient]);
 
   // Phase 1: Consumption data
   const { data: consumptionCurrent } = useQuery({
@@ -2115,8 +2149,12 @@ export default function Dashboard() {
           <p>{t('syncedVia')}</p>
           {importStatus?.latest && (
             <p className="mt-1">
-              {t('lastSync')}: {new Date(importStatus.latest.completed_at).toLocaleString(locale)}
-              ({importStatus.latest.bills_imported} {t('bills')})
+              {t('lastSync')}: {importStatus.latest.completed_at ? (
+                <>
+                  {parseSqliteDate(importStatus.latest.completed_at).toLocaleString(locale)}
+                  {' '}({importStatus.latest.bills_imported} {t('bills')})
+                </>
+              ) : t('importStatusRunning')}
             </p>
           )}
 
@@ -2139,16 +2177,16 @@ export default function Dashboard() {
                   {importStatus.history.map((h) => (
                     <tr key={h.id} className="border-b border-gray-100">
                       <td className="py-1 px-2 text-gray-600">
-                        {new Date(h.completed_at || h.started_at).toLocaleString(locale)}
+                        {parseSqliteDate(h.completed_at || h.started_at).toLocaleString(locale)}
                       </td>
-                      <td className="py-1 px-2 text-gray-600">{h.type}</td>
+                      <td className="py-1 px-2 text-gray-600">{t(IMPORT_TYPE_KEYS[h.type] || h.type)}</td>
                       <td className="py-1 px-2">
                         <span className={
                           h.status === 'success' ? 'text-green-600'
                           : h.status === 'running' ? 'text-blue-600'
                           : 'text-red-600'
                         }>
-                          {h.status}
+                          {t(IMPORT_STATUS_KEYS[h.status] || h.status)}
                         </span>
                       </td>
                       <td className="py-1 px-2 text-right text-gray-600">{h.bills_imported ?? '-'}</td>
