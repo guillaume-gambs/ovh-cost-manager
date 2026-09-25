@@ -234,7 +234,7 @@ export default function Dashboard() {
     }
     return out.length > 0 ? out : [PERIOD_OPTIONS[0]];
   })();
-  const currentPeriodLabel = (availablePeriods.find(o => o.months === trendPeriod) || {}).key;
+  const currentPeriodLabel = (PERIOD_OPTIONS.find(o => o.months === trendPeriod) || {}).key;
 
   // Set default months when data loads
   useEffect(() => {
@@ -1434,7 +1434,7 @@ export default function Dashboard() {
         {activeTab === 'trends' && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-              <h3 className="font-semibold text-gray-900 mb-4">{t('costEvolutionTotal')}</h3>
+              <h3 className="font-semibold text-gray-900 mb-4">{t('costEvolutionOver')} {t(currentPeriodLabel)}</h3>
               {monthlyTrend.length > 0 ? (
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
@@ -1555,7 +1555,7 @@ export default function Dashboard() {
                     ? `${(((monthlyTrend[monthlyTrend.length - 1]?.cost - monthlyTrend[0]?.cost) / monthlyTrend[0]?.cost) * 100) > 0 ? '+' : ''}${(((monthlyTrend[monthlyTrend.length - 1]?.cost - monthlyTrend[0]?.cost) / monthlyTrend[0]?.cost) * 100).toFixed(1)}%`
                     : 'N/A'}
                 </div>
-                <p className="text-sm text-gray-500 mt-1">{t('overLast')} {currentPeriodLabel ? t(currentPeriodLabel) : `${trendPeriod} ${t('lastMonths')}`}</p>
+                <p className="text-sm text-gray-500 mt-1">{t('overPeriod')} {t(currentPeriodLabel)}</p>
               </div>
               <div className={`bg-white rounded-xl p-5 shadow-sm border border-gray-100 ${monthlyTrend.length === 0 ? 'opacity-50' : ''}`}>
                 <span className="text-gray-500 text-sm">{t('mostExpensiveMonth')}</span>
