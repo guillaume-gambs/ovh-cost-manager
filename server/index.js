@@ -156,6 +156,8 @@ const importLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: () => 'global-manual-import',
+  // Only started runs (202) use the quota: a refused one (409, 500) does not
+  skipFailedRequests: true,
   validate: false
 });
 
