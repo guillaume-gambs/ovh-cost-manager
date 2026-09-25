@@ -1186,8 +1186,8 @@ const cloudDetailOps = {
 
     if (!fromDate || !toDate) return instances;
 
-    const { costs } = computeInstanceCosts(db, projectId, fromDate, toDate);
-    return instances.map(i => {
+    const { costs, unmatched } = computeInstanceCosts(db, projectId, fromDate, toDate);
+    const rows = instances.map(i => {
       const cost = costs.get(i.id);
       return {
         ...i,
@@ -1196,6 +1196,13 @@ const cloudDetailOps = {
         cost_estimated: cost ? cost.estimated : false
       };
     });
+
+    // Hourly lines whose instances are gone from the inventory: kept on a row
+    // of their own, flagged `unallocated`, so the column still adds up
+    if (unmatched !== 0) {
+      rows.push({ id: null, name: null, total: unmatched, cost_estimated: false, unallocated: true });
+    }
+    return rows;
   },
 
   insertQuota: (quota) => {

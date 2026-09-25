@@ -304,6 +304,12 @@ const snapshotCsvColumns = (language) => [
   { key: 'id', label: 'ID' }
 ];
 
+// Label of the row that carries the hourly lines left without an instance
+const UNALLOCATED_INSTANCES = {
+  fr: 'Non attribué (instances supprimées)',
+  en: 'Unallocated (deleted instances)'
+};
+
 // Cloud instances of a project, shared by the inline panel and its modal.
 const InstancesTable = ({ instances, language, t, fmt }) => (
   <table className="w-full text-sm">
@@ -318,6 +324,14 @@ const InstancesTable = ({ instances, language, t, fmt }) => (
     </thead>
     <tbody>
       {[...instances].sort((a, b) => (b.total || 0) - (a.total || 0)).map(inst => {
+        if (inst.unallocated) {
+          return (
+            <tr key="unallocated" className="border-b hover:bg-gray-50">
+              <td className="p-2 text-xs italic text-gray-500" colSpan={4}>{UNALLOCATED_INSTANCES[language]}</td>
+              <td className="p-2 text-right font-medium text-xs">{fmt(inst.total)}€</td>
+            </tr>
+          );
+        }
         const pc = inst.plan_code || inst.flavor || '';
         const isGpu = /^(l4-|l40s-|a100-|h100-|v100-|t1-|t2-)/.test(pc);
         return (
@@ -372,9 +386,14 @@ const instanceCsvColumns = (language) => [
   { key: 'id', label: 'ID' }
 ];
 
-// The displayed flavor falls back to the raw flavor id when planCode is missing
-const instanceCsvRows = (instances) =>
-  instances.map(i => ({ ...i, flavor_display: i.plan_code || i.flavor || '' }));
+// The displayed flavor falls back to the raw flavor id when planCode is missing.
+// The unallocated row has no instance name: it carries its label instead.
+const instanceCsvRows = (instances, language) =>
+  instances.map(i => ({
+    ...i,
+    name: i.unallocated ? UNALLOCATED_INSTANCES[language] : i.name,
+    flavor_display: i.plan_code || i.flavor || ''
+  }));
 
 // Dedicated servers inventory, shared by the inline panel and its modal.
 const ServersTable = ({ servers, t }) => (
@@ -705,6 +724,8 @@ export default function Dashboard() {
     queryFn: () => fetchProjectInstances(selectedProject.id, selectedMonth?.from, selectedMonth?.to),
     enabled: !!selectedProject
   });
+  // The unallocated row is not an instance
+  const instanceCount = projectInstances.filter(i => !i.unallocated).length;
 
   const { data: projectQuotas = [] } = useQuery({
     queryKey: ['projectQuotas', selectedProject?.id],
@@ -1955,7 +1976,7 @@ export default function Dashboard() {
                                     <div>
                                       <h4 className="font-medium text-gray-700 mb-3 flex items-center gap-2">
                                         <span>
-                                          {t('instances')} ({projectInstances.length})
+                                          {t('instances')} ({instanceCount})
                                           {projectInstanceTotal?.total > 0 && (
                                             <span className="ml-2 text-sm font-normal text-indigo-600">{fmt(projectInstanceTotal.total)}€</span>
                                           )}
@@ -1965,7 +1986,7 @@ export default function Dashboard() {
                                             language={language}
                                             onShowAll={() => setShowAllInstances(true)}
                                             onExport={() => downloadCSV(
-                                              instanceCsvRows(projectInstances),
+                                              instanceCsvRows(projectInstances, language),
                                               instanceCsvColumns(language),
                                               `ovh-instances-${selectedProject?.name || 'export'}`
                                             )}
@@ -2446,7 +2467,7 @@ export default function Dashboard() {
         maxWidth="max-w-4xl"
         title={
           <>
-            {t('instances')} ({projectInstances.length})
+            {t('instances')} ({instanceCount})
             {projectInstanceTotal?.total > 0 && (
               <span className="ml-2 text-sm font-normal text-indigo-600">{fmt(projectInstanceTotal.total)}€</span>
             )}
@@ -2459,7 +2480,7 @@ export default function Dashboard() {
           <TableActions
             language={language}
             onExport={() => downloadCSV(
-              instanceCsvRows(projectInstances),
+              instanceCsvRows(projectInstances, language),
               instanceCsvColumns(language),
               `ovh-instances-${selectedProject?.name || 'export'}`
             )}

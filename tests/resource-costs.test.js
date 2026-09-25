@@ -91,4 +91,21 @@ describe('instance cost', () => {
 
     expect(costById(instances)).toEqual({ january: 5, 'last-day': 5, june: null });
   });
+
+  test('keeps the hourly lines left without an instance on an unallocated row', () => {
+    seedInstance({ id: 'web', plan_code: 'b3-8', created_at: '2026-01-10T08:00:00Z' });
+    seedInstance({ id: 'june', plan_code: 'c3-4', created_at: '2026-06-02T08:00:00Z' });
+    seedBillLine("Consommation à l'heure pour les instances b3-8 gra11", 10);
+    // No r3-16 is left in the inventory, and the only c3-4 came after the period
+    seedBillLine("Consommation à l'heure pour les instances r3-16 gra11", 4.5);
+    seedBillLine("Consommation à l'heure pour les instances c3-4 gra11", 2.25);
+
+    const instances = db.cloudDetails.getInstancesByProject(PROJECT, FROM, TO);
+
+    expect(instances.filter(i => i.unallocated)).toEqual([
+      expect.objectContaining({ id: null, total: 6.75, cost_estimated: false })
+    ]);
+    // The cost column now adds up to the billed instance lines
+    expect(instances.reduce((sum, i) => sum + (i.total || 0), 0)).toBeCloseTo(16.75, 2);
+  });
 });
