@@ -1432,7 +1432,9 @@ const cloudDetailOps = {
     `).all(projectId, fromDate, toDate);
 
     for (const line of lines) {
-      const region = (line.description.split('-').pop() || '').trim().toLowerCase();
+      // Split on the " - " separator only: 3-AZ regions have dashes of their
+      // own ("Snapshots Public Cloud - eu-west-par")
+      const region = (line.description.split(' - ').pop() || '').trim().toLowerCase();
       const matching = snapshots.filter(s => (s.region || '').toLowerCase() === region);
       if (!allocateProRata(matching, line.total, s => s.size_gb)) {
         snapshots.push({
