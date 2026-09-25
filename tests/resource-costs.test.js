@@ -210,6 +210,27 @@ describe('instance cost', () => {
     // The cost column now adds up to the billed instance lines
     expect(instances.reduce((sum, i) => sum + (i.total || 0), 0)).toBeCloseTo(16.75, 2);
   });
+
+  test('charges a monthly prorata line to its instance, as an exact cost', () => {
+    const id = 'f10ee44b-b3da-491e-a4a4-2f642c000000';
+    seedInstance({ id, plan_code: 'b2-7', monthly_billing: 1, created_at: '2025-11-03T09:00:00Z' });
+    seedBillLine(`Prorata de la facturation mensuelle d'une instance b2-7 (id ${id})`, 16.39);
+
+    const instances = db.cloudDetails.getInstancesByProject(PROJECT, FROM, TO);
+
+    expect(instances).toEqual([expect.objectContaining({ id, total: 16.39, cost_estimated: false })]);
+  });
+
+  test('sends the monthly lines of an instance gone from the inventory to the unallocated row', () => {
+    const gone = '5a1c2e3d-0000-4000-8000-000000000001';
+    seedInstance({ id: 'web', plan_code: 'b3-8', created_at: '2026-01-10T08:00:00Z' });
+    seedBillLine(`Forfait mensuel pour une instance b2-7 (id ${gone}, region gra11)`, 20.5);
+    seedBillLine(`Prorata de la facturation mensuelle d'une instance b2-7 (id ${gone})`, 3.25);
+
+    const instances = db.cloudDetails.getInstancesByProject(PROJECT, FROM, TO);
+
+    expect(instances.filter(i => i.unallocated)).toEqual([expect.objectContaining({ total: 23.75 })]);
+  });
 });
 
 describe('Public Cloud cards', () => {

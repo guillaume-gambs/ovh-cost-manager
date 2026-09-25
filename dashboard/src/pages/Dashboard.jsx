@@ -306,7 +306,7 @@ const snapshotCsvColumns = (language) => [
   { key: 'id', label: 'ID' }
 ];
 
-// Label of the row that carries the hourly lines left without an instance
+// Label of the row that carries the bill lines left without an instance
 const UNALLOCATED_INSTANCES = {
   fr: 'Non attribué (instances supprimées)',
   en: 'Unallocated (deleted instances)'

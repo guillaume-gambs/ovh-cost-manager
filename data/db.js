@@ -916,10 +916,15 @@ function normalizeFlavor(value) {
  *
  * - monthly instances carry their own UUID in the description ("Forfait mensuel
  *   pour une instance eg-30 (id <uuid>, region gra1)"), so the cost is exact.
+ *   So does the prorata of that fee ("Prorata de la facturation mensuelle d'une
+ *   instance b2-7 (id <uuid>)").
  * - hourly instances are billed on one aggregated line per flavor (and often
  *   per region): "Consommation à l'heure pour les instances r3-16 gra11". That
  *   line is split evenly across the matching hourly instances and flagged as an
  *   estimate: the API exposes no per-instance runtime to weight it with.
+ *
+ * A line whose instance is not among the instances of the period ends up in
+ * `unmatched`, whatever its billing mode.
  *
  * Compute covered by a savings plan is billed on the plan's own line and is
  * deliberately left out of both: it belongs to the plan, not to an instance.
@@ -937,6 +942,7 @@ function computeInstanceCosts(db, projectId, fromDate, toDate) {
     WHERE d.project_id = ?
       AND b.date >= ? AND b.date <= ?
       AND (d.description LIKE 'Forfait mensuel pour une instance%'
+           OR d.description LIKE 'Prorata de la facturation mensuelle d%une instance%'
            OR d.description LIKE 'Consommation à l%heure pour les instances%')
   `).all(projectId, fromDate, toDate);
 
@@ -956,11 +962,14 @@ function computeInstanceCosts(db, projectId, fromDate, toDate) {
   };
 
   const hourly = instances.filter(i => !i.monthly_billing);
+  const known = new Set(instances.map(i => i.id));
 
   for (const line of lines) {
+    // Monthly fee or its prorata: charged to the instance named by its id
     const monthly = line.description.match(/\(id ([0-9a-f-]{36})/i);
     if (monthly) {
-      add(monthly[1], line.price, false);
+      if (known.has(monthly[1])) add(monthly[1], line.price, false);
+      else unmatched += line.price;
       continue;
     }
 
@@ -1203,8 +1212,8 @@ const cloudDetailOps = {
       };
     });
 
-    // Hourly lines whose instances are gone from the inventory: kept on a row
-    // of their own, flagged `unallocated`, so the column still adds up
+    // Lines whose instances are gone from the inventory: kept on a row of
+    // their own, flagged `unallocated`, so the column still adds up
     if (unmatched !== 0) {
       rows.push({ id: null, name: null, total: unmatched, cost_estimated: false, unallocated: true });
     }
