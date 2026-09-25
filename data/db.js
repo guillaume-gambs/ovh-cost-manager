@@ -725,13 +725,16 @@ const inventoryOps = {
   getPublicCloudStats: (fromDate, toDate) => {
     const db = getDb();
     
-    // Count unique Kubernetes services from descriptions
+    // Count unique Kubernetes services from descriptions. Savings plans for
+    // nodes ("savings-plan-3xc3-4_node_k8s") match '%k8s%' but belong to the
+    // savings plan card, as for the instance total.
     const k8s = db.prepare(`
       SELECT COUNT(DISTINCT domain) as count, ROUND(SUM(total_price), 2) as total
       FROM bill_details d
       JOIN bills b ON d.bill_id = b.id
       WHERE b.date >= ? AND b.date <= ?
         AND (LOWER(description) LIKE '%kubernetes%' OR LOWER(description) LIKE '%kube%' OR LOWER(description) LIKE '%k8s%')
+        AND LOWER(description) NOT LIKE 'savings plan%'
     `).get(fromDate, toDate);
 
     // Count object storage buckets from the imported inventory (buckets that exist

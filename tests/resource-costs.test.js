@@ -212,6 +212,18 @@ describe('instance cost', () => {
   });
 });
 
+describe('Public Cloud cards', () => {
+  test('the Kubernetes card leaves savings plan lines to the savings plan card', () => {
+    seedBillLine('Managed Kubernetes Service - Standard plan', 12);
+    seedBillLine('Savings plan (id : savings-plan-3xc3-4_node_k8s) pour 3 instance(s) c3-4 - Durée : 1M', 90);
+
+    const stats = db.inventory.getPublicCloudStats(FROM, TO);
+
+    expect(stats.kubernetes).toEqual({ count: 1, total: 12 });
+    expect(stats.savingsPlans).toEqual({ count: 1, total: 90 });
+  });
+});
+
 describe('savings plans', () => {
   test('sums the instances paid by every plan of a flavor against that flavor\'s inventory', () => {
     for (const id of ['k1', 'k2', 'k3', 'k4']) seedInstance({ id, plan_code: 'c3-4' });
