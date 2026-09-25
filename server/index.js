@@ -1236,7 +1236,9 @@ function registerRoutes() {
         sizeGb: v.size_gb,
         status: v.status,
         bootable: v.bootable === 1,
-        attachedTo: v.attached_to ? v.attached_to.split(',') : [],
+        // null, not [], on a bill line with no volume behind it: its attachment
+        // is unknown, so it must not read as a detached volume
+        attachedTo: v.in_inventory === 0 ? null : (v.attached_to ? v.attached_to.split(',') : []),
         createdAt: v.created_at,
         allocated: v.allocated === true,
         total: v.total
