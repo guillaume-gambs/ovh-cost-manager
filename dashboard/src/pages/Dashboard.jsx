@@ -66,10 +66,11 @@ const generateMarkdownReport = (summary, byService, byProject, selectedMonth, la
 };
 
 // Resource types the Infrastructure tab leaves out: Public Cloud has its own
-// tab, and domains moved to Web Cloud. Note that part of the 'other' type also
-// shows up in Web Cloud (hosting options, mail), it is kept here because the
-// type is a catch-all and would hide non Web Cloud lines.
-const INFRA_EXCLUDED_TYPES = ['cloud_project', 'domain'];
+// tab, and domains moved to Web Cloud, .ovh ones included (web_cloud type).
+// Note that part of the 'other' type also shows up in Web Cloud (hosting
+// options, mail), it is kept here because the type is a catch-all and would
+// hide non Web Cloud lines.
+const INFRA_EXCLUDED_TYPES = ['cloud_project', 'domain', 'web_cloud'];
 
 // Web Cloud is billed on yearly renewals, so a single month only ever shows an
 // arbitrary slice of it: the tab reads the 12 months ending on the selected one.
@@ -884,6 +885,14 @@ export default function Dashboard() {
                     >
                       {language === 'en' ? 'View infrastructure detail →' : 'Voir le détail infrastructure →'}
                     </button>
+                    {byResourceType.some(r => ['domain', 'web_cloud'].includes(r.resource_type)) && (
+                      <button
+                        onClick={() => { setActiveTab('webcloud'); setSelectedResourceType(null); }}
+                        className="text-xs text-blue-600 hover:underline text-left"
+                      >
+                        {language === 'en' ? 'View Web Cloud detail (domains) →' : 'Voir le détail Web Cloud (domaines) →'}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
