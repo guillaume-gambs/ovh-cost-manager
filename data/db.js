@@ -248,6 +248,21 @@ const importLogOps = {
   getAll: () => {
     const db = getDb();
     return db.prepare('SELECT * FROM import_log ORDER BY id DESC').all();
+  },
+
+  // An import is in progress when the latest entry is still 'running' and
+  // started less than 30 minutes ago (an older one is a crashed run).
+  // started_at is a UTC CURRENT_TIMESTAMP without timezone, so its age is
+  // computed in SQL against 'now', which is UTC too.
+  isRunning: () => {
+    const db = getDb();
+    const running = db.prepare(`
+      SELECT 1 FROM import_log
+      WHERE id = (SELECT MAX(id) FROM import_log)
+        AND status = 'running'
+        AND datetime(started_at) > datetime('now', '-30 minutes')
+    `).get();
+    return Boolean(running);
   }
 };
 
@@ -310,6 +325,21 @@ const analysisOps = {
       JOIN bills b ON d.bill_id = b.id
       WHERE b.date >= date('now', 'start of month', '-' || ? || ' months')
       GROUP BY strftime('%Y-%m', b.date)
+      ORDER BY month
+    `).all(months);
+  },
+
+  monthlyTrendByResourceType: (months = 6) => {
+    const db = getDb();
+    return db.prepare(`
+      SELECT
+        strftime('%Y-%m', b.date) as month,
+        COALESCE(d.resource_type, 'other') as resource_type,
+        SUM(d.total_price) as total
+      FROM bill_details d
+      JOIN bills b ON d.bill_id = b.id
+      WHERE b.date >= date('now', 'start of month', '-' || ? || ' months')
+      GROUP BY strftime('%Y-%m', b.date), COALESCE(d.resource_type, 'other')
       ORDER BY month
     `).all(months);
   },
