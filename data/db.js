@@ -1231,6 +1231,9 @@ const cloudDetailOps = {
   // description ("Stockage Standard - Bucket mybucket sur la région gra").
   // Buckets that are billed but absent from the inventory (deleted, or
   // inventory never imported) are appended with in_inventory = 0.
+  //
+  // The class only comes from the inventory: OVH writes "Stockage Standard" on
+  // these lines whatever the class, so an unknown class stays null.
   getBucketsByProject: (projectId, fromDate, toDate) => {
     const db = getDb();
 
@@ -1249,7 +1252,6 @@ const cloudDetailOps = {
     const costs = db.prepare(`
       WITH bucket_lines AS (
         SELECT
-          d.description as description,
           SUBSTR(d.description, INSTR(d.description, '- Bucket ') + 9) as tail,
           d.total_price as price
         FROM bill_details d
@@ -1265,8 +1267,6 @@ const cloudDetailOps = {
         CASE WHEN INSTR(tail, ' sur la région ') > 0
              THEN TRIM(SUBSTR(tail, INSTR(tail, ' sur la région ') + 15))
              ELSE '' END as region,
-        MAX(CASE WHEN description LIKE 'Stockage %'
-                 THEN TRIM(SUBSTR(description, 10, INSTR(description, '- Bucket') - 10)) END) as billed_class,
         ROUND(SUM(price), 2) as total
       FROM bucket_lines
       GROUP BY name, region
@@ -1281,7 +1281,7 @@ const cloudDetailOps = {
       return {
         name: b.name,
         region: b.region,
-        storage_class: b.storage_class || cost?.billed_class || null,
+        storage_class: b.storage_class || null,
         status: b.status,
         objects_count: b.objects_count,
         objects_size: b.objects_size,
@@ -1299,7 +1299,7 @@ const cloudDetailOps = {
       rows.push({
         name: cost.name,
         region: cost.region,
-        storage_class: cost.billed_class || null,
+        storage_class: null,
         status: null,
         objects_count: null,
         objects_size: null,

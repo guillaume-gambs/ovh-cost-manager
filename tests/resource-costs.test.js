@@ -78,6 +78,26 @@ describe('snapshot cost', () => {
   });
 });
 
+describe('bucket type', () => {
+  test('stays unknown when the class could not be read, whatever the bill line says', () => {
+    // Inventory bucket whose class could not be sampled (empty bucket)
+    db.cloudDetails.upsertBucket({
+      id: `${PROJECT}:GRA:empty`, project_id: PROJECT, name: 'empty', region: 'GRA', storage_class: null,
+      status: null, objects_count: 0, objects_size: 0, created_at: '2025-01-01T00:00:00Z'
+    });
+    seedBillLine('Stockage Standard - Bucket empty sur la région gra', 1.5);
+    // Billed but absent from the inventory
+    seedBillLine('Stockage Standard - Bucket gone sur la région gra', 0.5);
+
+    const buckets = db.cloudDetails.getBucketsByProject(PROJECT, FROM, TO);
+
+    expect(buckets.map(b => [b.name, b.storage_class, b.total])).toEqual([
+      ['empty', null, 1.5],
+      ['gone', null, 0.5]
+    ]);
+  });
+});
+
 describe('instance cost', () => {
   const costById = (instances) => Object.fromEntries(instances.map(i => [i.id, i.total]));
 

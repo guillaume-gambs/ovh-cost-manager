@@ -1198,8 +1198,11 @@ function registerRoutes() {
       const validation = validateDateRange(from, to);
       if (!validation.valid) return res.status(400).json({ error: validation.error });
       const buckets = db.cloudDetails.getBucketsByProject(req.params.id, from, to);
-      // type is null when the class is unknown (bucket gone, or inventory not
-      // imported). Do not guess a class here, the UI shows it as unknown.
+      // type is null when the inventory holds no class: bucket billed but not
+      // in the inventory (deleted, or inventory not imported), or class that
+      // could not be read (empty bucket, object listing refused). The bill line
+      // cannot tell, it reads "Stockage Standard" for every class. Do not guess
+      // a class here, the UI shows it as unknown.
       const result = buckets.map(b => ({
         name: b.name,
         type: b.storage_class,
