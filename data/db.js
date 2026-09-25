@@ -937,9 +937,13 @@ function computeInstanceCosts(db, projectId, fromDate, toDate) {
            OR d.description LIKE 'Consommation à l%heure pour les instances%')
   `).all(projectId, fromDate, toDate);
 
-  const instances = db.prepare(
-    'SELECT id, plan_code, flavor, region, monthly_billing FROM cloud_instances WHERE project_id = ?'
-  ).all(projectId);
+  // An instance created after the period did not run during it, so it takes
+  // no share of that period's lines (same rule as the buckets)
+  const instances = db.prepare(`
+    SELECT id, plan_code, flavor, region, monthly_billing FROM cloud_instances
+    WHERE project_id = ?
+      AND (created_at IS NULL OR SUBSTR(created_at, 1, 10) <= ?)
+  `).all(projectId, toDate);
 
   const add = (id, price, estimated) => {
     const current = costs.get(id) || { total: 0, estimated: false };

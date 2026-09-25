@@ -30,6 +30,13 @@ function seedBillLine(description, totalPrice, date = '2026-03-01') {
   });
 }
 
+function seedInstance(instance) {
+  db.cloudDetails.upsertInstance({
+    project_id: PROJECT, name: instance.id, flavor: '', plan_code: null, region: 'GRA11',
+    status: 'ACTIVE', created_at: null, monthly_billing: 0, ...instance
+  });
+}
+
 function seedSnapshot(snapshot) {
   db.cloudDetails.upsertSnapshot({
     project_id: PROJECT, name: snapshot.id, region: 'GRA1', size_gb: 10, status: 'active',
@@ -68,5 +75,20 @@ describe('snapshot cost', () => {
     const snapshots = db.cloudDetails.getSnapshotsByProject(PROJECT, FROM, TO);
 
     expect(snapshots).toEqual([expect.objectContaining({ id: 'snap-1', total: 4.2, allocated: true })]);
+  });
+});
+
+describe('instance cost', () => {
+  const costById = (instances) => Object.fromEntries(instances.map(i => [i.id, i.total]));
+
+  test('shares an hourly line only among the instances created by the end of the period', () => {
+    seedInstance({ id: 'january', plan_code: 'b3-8', created_at: '2026-01-10T08:00:00Z' });
+    seedInstance({ id: 'last-day', plan_code: 'b3-8', created_at: '2026-03-31T23:00:00Z' });
+    seedInstance({ id: 'june', plan_code: 'b3-8', created_at: '2026-06-02T08:00:00Z' });
+    seedBillLine("Consommation à l'heure pour les instances b3-8 gra11", 10);
+
+    const instances = db.cloudDetails.getInstancesByProject(PROJECT, FROM, TO);
+
+    expect(costById(instances)).toEqual({ january: 5, 'last-day': 5, june: null });
   });
 });
