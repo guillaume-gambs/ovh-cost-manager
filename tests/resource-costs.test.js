@@ -63,6 +63,48 @@ beforeEach(() => {
   db.projects.upsert({ id: PROJECT, name: 'Project 1', description: null, status: 'ok', created_at: null });
 });
 
+describe('allocateProRata', () => {
+  const bySize = r => r.size;
+
+  test('splits the amount pro rata of the weights, adding up to the cent', () => {
+    const rows = [{ size: 1 }, { size: 1 }, { size: 1 }];
+
+    expect(db.allocateProRata(rows, 100, bySize)).toBe(true);
+
+    expect(rows).toEqual([
+      { size: 1, total: 33.34, allocated: true },
+      { size: 1, total: 33.33, allocated: true },
+      { size: 1, total: 33.33, allocated: true }
+    ]);
+    expect(rows.reduce((sum, r) => sum + r.total, 0)).toBeCloseTo(100, 2);
+  });
+
+  test('gives the rounding residual to the heaviest row', () => {
+    const rows = [{ size: 1 }, { size: 1 }, { size: 1 }, { size: 3 }];
+
+    db.allocateProRata(rows, 1, bySize);
+
+    // 0.17 x 3 + 0.50 would bill one cent too many
+    expect(rows.map(r => r.total)).toEqual([0.17, 0.17, 0.17, 0.49]);
+  });
+
+  test('gives no share to a row without volume', () => {
+    const rows = [{ size: 0 }, { size: 2 }];
+
+    db.allocateProRata(rows, 5, bySize);
+
+    expect(rows).toEqual([{ size: 0 }, { size: 2, total: 5, allocated: true }]);
+  });
+
+  test('spreads nothing when no row has any volume, so the caller keeps the line', () => {
+    const rows = [{ size: 0 }, { size: null }];
+
+    expect(db.allocateProRata(rows, 5, bySize)).toBe(false);
+
+    expect(rows).toEqual([{ size: 0 }, { size: null }]);
+  });
+});
+
 describe('snapshot cost', () => {
   test.each([
     ['gra1', 'GRA1'],

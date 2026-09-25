@@ -1735,6 +1735,7 @@ module.exports = {
   closeDb,
   clearAll,
   transaction,
+  allocateProRata,
   projects: projectOps,
   bills: billOps,
   details: detailOps,
