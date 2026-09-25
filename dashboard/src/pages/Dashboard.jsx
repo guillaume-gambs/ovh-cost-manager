@@ -1,5 +1,5 @@
-import { useState, useEffect, Fragment } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect, useRef, Fragment } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend
@@ -12,7 +12,7 @@ import {
   fetchInventoryVps, fetchInventoryStorage, fetchExpiringServices,
   fetchByResourceType, fetchResourceTypeDetails, fetchProjectsEnriched, fetchProjectConsumption,
   fetchProjectInstances, fetchProjectQuotas, fetchGpuSummary, fetchPublicCloudStats, fetchBackupStats,
-  fetchProjectBuckets, fetchProjectInstanceTotal,
+  fetchProjectBuckets, fetchProjectInstanceTotal, triggerImport, fetchMonthlyTrendByCategory,
   fetchProjectVolumes, fetchProjectSnapshots, fetchProjectSavingsPlans
 } from '../services/api';
 import { useLanguage } from '../hooks/useLanguage.jsx';
@@ -30,6 +30,57 @@ const formatCurrency = (value, language = 'fr') => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }).format(value);
+};
+
+// Format a 'YYYY-MM' string into a localized "short month + year" label.
+// Localization belongs on the client; the API sends the raw yearMonth.
+const formatYearMonth = (yearMonth, language = 'fr') => {
+  if (!yearMonth) return '';
+  const [year, month] = yearMonth.split('-').map(Number);
+  if (!year || !month) return yearMonth;
+  const locale = language === 'en' ? 'en-US' : 'fr-FR';
+  return new Date(year, month - 1, 1).toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+};
+
+// Trend period options, expressed in months. The largest offered option is
+// derived from the oldest available month so users can never pick a range
+// emptier than their data.
+const PERIOD_OPTIONS = [
+  { months: 3, key: 'period3m' },
+  { months: 6, key: 'period6m' },
+  { months: 12, key: 'period1y' },
+  { months: 24, key: 'period2y' },
+  { months: 36, key: 'period3y' },
+  { months: 60, key: 'period5y' },
+  { months: 120, key: 'period10y' },
+  { months: 180, key: 'period15y' },
+  { months: 240, key: 'period20y' }
+];
+
+// Number of months from a 'YYYY-MM' up to the current month, inclusive.
+const monthsSince = (yearMonth) => {
+  if (!yearMonth) return 0;
+  const [y, m] = yearMonth.split('-').map(Number);
+  if (!y || !m) return 0;
+  const now = new Date();
+  return (now.getFullYear() - y) * 12 + (now.getMonth() + 1 - m) + 1;
+};
+
+// SQLite CURRENT_TIMESTAMP values ('YYYY-MM-DD HH:MM:SS') are UTC without a
+// timezone suffix: parse them as UTC so they display in local time.
+const parseSqliteDate = (value) => new Date(`${value.replace(' ', 'T')}Z`);
+
+// Translation keys for the import_log type and status values
+const IMPORT_TYPE_KEYS = {
+  full: 'importTypeFull',
+  period: 'importTypePeriod',
+  differential: 'importTypeDifferential'
+};
+const IMPORT_STATUS_KEYS = {
+  running: 'importStatusRunning',
+  success: 'importStatusSuccess',
+  failed: 'importStatusFailed',
+  partial: 'importStatusPartial'
 };
 
 // Generate markdown report
@@ -570,6 +621,19 @@ export default function Dashboard() {
     queryFn: fetchMonths
   });
 
+  // Trend periods available given how far back the data goes. Offer every
+  // predefined step up to (and including) the first one that covers all data.
+  const maxMonths = months.length > 0 ? monthsSince(months[months.length - 1].value) : 0;
+  const availablePeriods = (() => {
+    const out = [];
+    for (const opt of PERIOD_OPTIONS) {
+      out.push(opt);
+      if (opt.months >= maxMonths) break;
+    }
+    return out.length > 0 ? out : [PERIOD_OPTIONS[0]];
+  })();
+  const currentPeriodLabel = (PERIOD_OPTIONS.find(o => o.months === trendPeriod) || {}).key;
+
   // Set default months when data loads
   useEffect(() => {
     if (months.length > 0 && !selectedMonth) {
@@ -584,12 +648,9 @@ export default function Dashboard() {
         setCompareMonthB(months[0]);
       }
     }
-    // Adjust trend period if it exceeds available data
-    if (months.length > 0 && trendPeriod > months.length) {
-      const validPeriods = [3, 6, 12, 24, 36].filter(p => p <= months.length);
-      if (validPeriods.length > 0) {
-        setTrendPeriod(validPeriods[validPeriods.length - 1]);
-      }
+    // Adjust trend period if it is no longer one of the available options
+    if (months.length > 0 && !availablePeriods.some(o => o.months === trendPeriod)) {
+      setTrendPeriod(availablePeriods[availablePeriods.length - 1].months);
     }
   }, [months, selectedMonth, trendPeriod]);
 
@@ -615,6 +676,18 @@ export default function Dashboard() {
   const { data: monthlyTrend = [] } = useQuery({
     queryKey: ['monthlyTrend', trendPeriod],
     queryFn: () => fetchMonthlyTrend(trendPeriod)
+  });
+
+  const { data: trendByCategory = { categories: [], data: [] } } = useQuery({
+    queryKey: ['monthlyTrendByCategory', trendPeriod],
+    queryFn: () => fetchMonthlyTrendByCategory(trendPeriod)
+  });
+  // Categories hidden from the by-category chart (toggled via the legend).
+  const [hiddenCategories, setHiddenCategories] = useState(() => new Set());
+  const toggleCategory = (key) => setHiddenCategories(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
   });
 
   // Comparison data
@@ -656,8 +729,47 @@ export default function Dashboard() {
 
   const { data: importStatus } = useQuery({
     queryKey: ['importStatus'],
-    queryFn: fetchImportStatus
+    queryFn: fetchImportStatus,
+    // Poll while an import is in progress so the footer follows it, every
+    // 30 s to stay well below the general API rate limit (100 requests per
+    // 15 minutes per IP by default)
+    refetchInterval: (query) => (query.state.data?.running ? 30000 : false)
   });
+
+  // Manual resync
+  const queryClient = useQueryClient();
+  const [syncFeedback, setSyncFeedback] = useState(null); // { type: 'ok'|'error', msg }
+  const resync = useMutation({
+    mutationFn: triggerImport,
+    onSuccess: () => {
+      setSyncFeedback({ type: 'ok', msg: t('syncStarted') });
+      // The import runs in the background; refresh status a bit later.
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ['importStatus'] }), 8000);
+    },
+    onError: (err) => {
+      const status = err?.response?.status;
+      const key = status === 429 ? 'syncRateLimited'
+        : err?.response?.data?.error === 'syncDisabled' ? 'syncDisabled'
+        : status === 409 ? 'syncRunning'
+        : 'syncError';
+      setSyncFeedback({ type: 'error', msg: t(key) });
+    }
+  });
+
+  // Once the latest import has finished, refresh every query built from
+  // imported data (all of them but config, user and the import status).
+  const latestImport = importStatus?.latest;
+  const previousImport = useRef(latestImport);
+  useEffect(() => {
+    const previous = previousImport.current;
+    previousImport.current = latestImport;
+    if (!previous || !latestImport || latestImport.status === 'running') return;
+    if (previous.id !== latestImport.id || previous.status === 'running') {
+      queryClient.invalidateQueries({
+        predicate: (query) => !['config', 'user', 'importStatus'].includes(query.queryKey[0])
+      });
+    }
+  }, [latestImport, queryClient]);
 
   // Phase 1: Consumption data
   const { data: consumptionCurrent } = useQuery({
@@ -882,6 +994,20 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Manual resync */}
+            <button
+              onClick={() => { setSyncFeedback(null); resync.mutate(); }}
+              disabled={resync.isPending}
+              title={t('resync')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                resync.isPending
+                  ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 cursor-pointer'
+              }`}
+            >
+              <span className={resync.isPending ? 'animate-spin' : ''}>⟳</span>
+              <span>{resync.isPending ? t('syncing') : t('resync')}</span>
+            </button>
             {/* Expiration badge */}
             {expiringServices.length > 0 && (
               <div className="flex items-center gap-1 px-3 py-1.5 bg-orange-100 text-orange-700 rounded-lg text-sm font-medium">
@@ -1094,11 +1220,9 @@ export default function Dashboard() {
                 onChange={(e) => setTrendPeriod(Number(e.target.value))}
                 className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm shadow-sm cursor-pointer"
               >
-                {months.length >= 3 && <option value={3}>{t('months3')}</option>}
-                {months.length >= 6 && <option value={6}>{t('months6')}</option>}
-                {months.length >= 12 && <option value={12}>{t('months12')}</option>}
-                {months.length >= 24 && <option value={24}>{t('months24')}</option>}
-                {months.length >= 36 && <option value={36}>{t('months36')}</option>}
+                {availablePeriods.map(opt => (
+                  <option key={opt.months} value={opt.months}>{t(opt.key)}</option>
+                ))}
               </select>
             </div>
           )}
@@ -1730,15 +1854,15 @@ export default function Dashboard() {
         {activeTab === 'trends' && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
-              <h3 className="font-semibold text-gray-900 mb-4">{t('evolutionOver')} {trendPeriod} {language === 'en' ? 'months' : 'mois'}</h3>
+              <h3 className="font-semibold text-gray-900 mb-4">{t('costEvolutionOver')} {t(currentPeriodLabel)}</h3>
               {monthlyTrend.length > 0 ? (
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={monthlyTrend}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="month" />
+                      <XAxis dataKey="yearMonth" tickFormatter={(ym) => formatYearMonth(ym, language)} />
                       <YAxis tickFormatter={(v) => `${v}€`} />
-                      <Tooltip formatter={(v) => `${fmt(v)}€`} />
+                      <Tooltip labelFormatter={(ym) => formatYearMonth(ym, language)} formatter={(v) => `${fmt(v)}€`} />
                       <Line
                         type="monotone"
                         dataKey="cost"
@@ -1750,6 +1874,67 @@ export default function Dashboard() {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+              ) : (
+                <div className="h-72 flex items-center justify-center text-gray-400">
+                  <p>{t('noDataAvailable')}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Cost trend by category */}
+            <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+              <h3 className="font-semibold text-gray-900 mb-4">{t('trendByCategory')}</h3>
+              {trendByCategory.data.length > 0 && trendByCategory.categories.length > 0 ? (
+                <>
+                  {/* Clickable legend: toggle categories to hide/show (Y axis rescales) */}
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    {trendByCategory.categories.map((c) => {
+                      const hidden = hiddenCategories.has(c.key);
+                      return (
+                        <button
+                          key={c.key}
+                          onClick={() => toggleCategory(c.key)}
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors cursor-pointer ${
+                            hidden ? 'bg-gray-50 text-gray-400 border-gray-200' : 'bg-white text-gray-700 border-gray-300'
+                          }`}
+                        >
+                          <span
+                            className="inline-block w-3 h-3 rounded-full"
+                            style={{ backgroundColor: hidden ? '#d1d5db' : c.color }}
+                          />
+                          {c.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="h-96">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trendByCategory.data}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="yearMonth" tickFormatter={(ym) => formatYearMonth(ym, language)} />
+                        <YAxis tickFormatter={(v) => `${v}€`} />
+                        <Tooltip
+                          labelFormatter={(ym) => formatYearMonth(ym, language)}
+                          formatter={(v, name) => [`${fmt(v)}€`, name]}
+                        />
+                        {trendByCategory.categories
+                          .filter((c) => !hiddenCategories.has(c.key))
+                          .map((c) => (
+                            <Line
+                              key={c.key}
+                              type="monotone"
+                              dataKey={c.key}
+                              name={c.label}
+                              stroke={c.color}
+                              strokeWidth={2}
+                              dot={false}
+                              activeDot={{ r: 5 }}
+                            />
+                          ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
               ) : (
                 <div className="h-72 flex items-center justify-center text-gray-400">
                   <p>{t('noDataAvailable')}</p>
@@ -1790,13 +1975,13 @@ export default function Dashboard() {
                     ? `${(((monthlyTrend[monthlyTrend.length - 1]?.cost - monthlyTrend[0]?.cost) / monthlyTrend[0]?.cost) * 100) > 0 ? '+' : ''}${(((monthlyTrend[monthlyTrend.length - 1]?.cost - monthlyTrend[0]?.cost) / monthlyTrend[0]?.cost) * 100).toFixed(1)}%`
                     : 'N/A'}
                 </div>
-                <p className="text-sm text-gray-500 mt-1">{t('overLast')} {trendPeriod} {t('lastMonths')}</p>
+                <p className="text-sm text-gray-500 mt-1">{t('overPeriod')} {t(currentPeriodLabel)}</p>
               </div>
               <div className={`bg-white rounded-xl p-5 shadow-sm border border-gray-100 ${monthlyTrend.length === 0 ? 'opacity-50' : ''}`}>
                 <span className="text-gray-500 text-sm">{t('mostExpensiveMonth')}</span>
                 <div className={`text-3xl font-bold mt-2 ${monthlyTrend.length > 0 ? 'text-red-600' : 'text-gray-400'}`}>
                   {monthlyTrend.length > 0
-                    ? monthlyTrend.reduce((max, m) => m.cost > max.cost ? m : max, monthlyTrend[0]).month
+                    ? formatYearMonth(monthlyTrend.reduce((max, m) => m.cost > max.cost ? m : max, monthlyTrend[0]).yearMonth, language)
                     : 'N/A'}
                 </div>
                 <p className="text-sm text-gray-500 mt-1">
@@ -2422,13 +2607,63 @@ export default function Dashboard() {
 
         {/* Footer */}
         <div className="text-center text-sm text-gray-400 pt-4 pb-2">
+          {syncFeedback && (
+            <p className={`mb-2 text-sm font-medium ${syncFeedback.type === 'ok' ? 'text-green-600' : 'text-red-600'}`}>
+              {syncFeedback.msg}
+            </p>
+          )}
           <p>{t('syncedVia')}</p>
           {importStatus?.latest && (
             <p className="mt-1">
-              {t('lastSync')}: {new Date(importStatus.latest.completed_at).toLocaleString(locale)}
-              ({importStatus.latest.bills_imported} {t('bills')})
+              {t('lastSync')}: {importStatus.latest.completed_at ? (
+                <>
+                  {parseSqliteDate(importStatus.latest.completed_at).toLocaleString(locale)}
+                  {' '}({importStatus.latest.bills_imported} {t('bills')})
+                </>
+              ) : t('importStatusRunning')}
             </p>
           )}
+
+          {/* Import history */}
+          <details className="mt-3 max-w-2xl mx-auto text-left">
+            <summary className="cursor-pointer text-gray-500 hover:text-gray-700 text-center">
+              {t('importHistory')}
+            </summary>
+            {importStatus?.history?.length > 0 ? (
+              <table className="w-full mt-2 text-xs border-collapse">
+                <thead>
+                  <tr className="text-gray-500 border-b border-gray-200">
+                    <th className="text-left py-1 px-2">{t('importDate')}</th>
+                    <th className="text-left py-1 px-2">{t('importType')}</th>
+                    <th className="text-left py-1 px-2">{t('importStatusLabel')}</th>
+                    <th className="text-right py-1 px-2">{t('importBills')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importStatus.history.map((h) => (
+                    <tr key={h.id} className="border-b border-gray-100">
+                      <td className="py-1 px-2 text-gray-600">
+                        {parseSqliteDate(h.completed_at || h.started_at).toLocaleString(locale)}
+                      </td>
+                      <td className="py-1 px-2 text-gray-600">{t(IMPORT_TYPE_KEYS[h.type] || h.type)}</td>
+                      <td className="py-1 px-2">
+                        <span className={
+                          h.status === 'success' ? 'text-green-600'
+                          : h.status === 'running' ? 'text-blue-600'
+                          : 'text-red-600'
+                        }>
+                          {t(IMPORT_STATUS_KEYS[h.status] || h.status)}
+                        </span>
+                      </td>
+                      <td className="py-1 px-2 text-right text-gray-600">{h.bills_imported ?? '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="mt-2 text-center text-gray-400">{t('noImportHistory')}</p>
+            )}
+          </details>
         </div>
       </div>
 

@@ -38,7 +38,7 @@ services:
     container_name: ovh-cost-manager
     restart: unless-stopped
     volumes:
-      - ocm-data:/app/data
+      - ocm-data:/data
       - ./config.json:/app/config.json:ro
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
@@ -49,6 +49,9 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
+      # Database lives in a dedicated dir mounted as a volume, kept separate
+      # from the application code under /app/data (which ships in the image).
+      - DATA_DIR=/data
       - TRUST_PROXY=true
       # OIDC Configuration
       - OIDC_ENABLED=true

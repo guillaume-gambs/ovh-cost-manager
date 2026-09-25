@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');
 
 // Import database module from data workspace
 const db = require('../data/db');
@@ -130,8 +131,10 @@ const apiLimiter = rateLimit({
   standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
   legacyHeaders: false, // Disable `X-RateLimit-*` headers
   skip: (req) => {
-    // Skip rate limiting for health checks
-    return req.path === '/api/health';
+    // Skip rate limiting for health checks. Use originalUrl: this limiter is
+    // mounted on '/api/', so req.path here is '/health' (prefix stripped),
+    // which made the previous '/api/health' check never match.
+    return (req.originalUrl || req.url).split('?')[0] === '/api/health';
   }
 });
 
@@ -143,6 +146,64 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+// Manual import trigger: hard-capped at one run per hour for everyone (shared
+// global bucket, not per-IP) to protect the OVH API. This is a functional
+// safeguard, applied even when the DoS rate limiting is disabled.
+// Note: in-memory window, so it resets if the server restarts.
+const importLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 1,
+  message: { error: 'syncRateLimited' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: () => 'global-manual-import',
+  // Only started runs (202) use the quota: a refused one (409, 500) does not
+  skipFailedRequests: true,
+  validate: false
+});
+
+// Shared resource-type presentation (used by by-resource-type and the
+// monthly-trend-by-category endpoints).
+const RESOURCE_TYPE_COLORS = {
+  'cloud_project': '#3b82f6',
+  'dedicated_server': '#ef4444',
+  'vps': '#f59e0b',
+  'storage': '#10b981',
+  'load_balancer': '#06b6d4',
+  'domain': '#8b5cf6',
+  'ip_service': '#ec4899',
+  'telephony': '#f97316',
+  'private_cloud': '#7c3aed',
+  'private_cloud_host': '#9333ea',
+  'private_cloud_datastore': '#a855f7',
+  'license': '#0891b2',
+  'backup': '#059669',
+  'support': '#64748b',
+  'telecom': '#d97706',
+  'web_cloud': '#2563eb',
+  'other': '#6b7280'
+};
+
+const RESOURCE_TYPE_LABELS = {
+  'cloud_project': 'Public Cloud',
+  'dedicated_server': 'Dedicated Servers',
+  'vps': 'VPS',
+  'storage': 'Storage',
+  'load_balancer': 'Load Balancers',
+  'domain': 'Domains',
+  'ip_service': 'IP',
+  'telephony': 'Telephony',
+  'private_cloud': 'Private Cloud',
+  'private_cloud_host': 'Private Cloud Hosts',
+  'private_cloud_datastore': 'Private Cloud Datastores',
+  'license': 'Licenses',
+  'backup': 'Backup',
+  'support': 'Support',
+  'telecom': 'Telecom',
+  'web_cloud': 'Web Cloud',
+  'other': 'Other'
+};
 
 // Trust proxy headers (for reverse proxy/load balancer)
 if (rateLimitConfig.trustProxy) {
@@ -561,6 +622,48 @@ function registerRoutes() {
     }
   });
 
+  // Monthly trend broken down by resource type, shaped for a multi-line chart:
+  // { categories: [{key, label, color}], data: [{ yearMonth, <key>: total, ... }] }
+  app.get('/api/analysis/monthly-trend-by-category', (req, res) => {
+    try {
+      const months = parseInt(req.query.months) || 6;
+      const rows = db.analysis.monthlyTrendByResourceType(months);
+
+      // Total per resource_type to order categories by spend.
+      const totals = {};
+      const monthsSet = new Set();
+      for (const r of rows) {
+        totals[r.resource_type] = (totals[r.resource_type] || 0) + r.total;
+        monthsSet.add(r.month);
+      }
+
+      const categories = Object.keys(totals)
+        .sort((a, b) => totals[b] - totals[a])
+        .map(key => ({
+          key,
+          label: RESOURCE_TYPE_LABELS[key] || key,
+          color: RESOURCE_TYPE_COLORS[key] || RESOURCE_TYPE_COLORS['other']
+        }));
+
+      // One row per month with every category present (0 when absent) so lines
+      // stay continuous.
+      const byMonth = {};
+      for (const ym of monthsSet) {
+        byMonth[ym] = { yearMonth: ym };
+        for (const c of categories) byMonth[ym][c.key] = 0;
+      }
+      for (const r of rows) {
+        byMonth[r.month][r.resource_type] = Math.round(r.total * 100) / 100;
+      }
+
+      const data = Object.values(byMonth).sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+
+      res.json({ categories, data });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ========================
   // Summary Endpoint
   // ========================
@@ -613,8 +716,42 @@ function registerRoutes() {
 
       res.json({
         latest,
+        // Same rule as the resync route; the dashboard polls while it is true
+        running: db.importLog.isRunning(),
         history: all
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manual resync: spawn a differential import in the background.
+  // Rate-limited to once per hour (importLimiter) and guarded against
+  // overlapping a run already in progress.
+  app.post('/api/import/run', importLimiter, (req, res) => {
+    try {
+      // IMPORT_ENABLED=false turns off manual imports as well as the cron
+      if (process.env.IMPORT_ENABLED === 'false') {
+        return res.status(409).json({ error: 'syncDisabled' });
+      }
+      if (db.importLog.isRunning()) {
+        return res.status(409).json({ error: 'syncRunning' });
+      }
+
+      // Same options as the cron (scripts/cron-import.sh): --diff plus
+      // IMPORT_FLAGS split on spaces, --all by default
+      const flags = (process.env.IMPORT_FLAGS || '--all').split(/\s+/).filter(Boolean);
+      const importScript = path.resolve(__dirname, '..', 'data', 'import.js');
+      const child = spawn(process.execPath, [importScript, '--diff', ...flags], {
+        detached: true,
+        // Keep the import output, errors included, in the server logs
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: process.env
+      });
+      child.on('error', (err) => console.error('Manual import spawn failed:', err.message));
+      child.unref();
+
+      res.status(202).json({ started: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1059,45 +1196,11 @@ function registerRoutes() {
 
       const data = db.inventory.byResourceType(from, to);
 
-      const colors = {
-        'cloud_project': '#3b82f6',
-        'dedicated_server': '#ef4444',
-        'vps': '#f59e0b',
-        'storage': '#10b981',
-        'load_balancer': '#06b6d4',
-        'domain': '#8b5cf6',
-        'ip_service': '#ec4899',
-        'telephony': '#f97316',
-        'private_cloud': '#7c3aed',
-        'private_cloud_host': '#9333ea',
-        'private_cloud_datastore': '#a855f7',
-        'license': '#0891b2',
-        'backup': '#059669',
-        'other': '#6b7280'
-      };
-
-      const labels = {
-        'cloud_project': 'Public Cloud',
-        'dedicated_server': 'Dedicated Servers',
-        'vps': 'VPS',
-        'storage': 'Storage',
-        'load_balancer': 'Load Balancers',
-        'domain': 'Domains',
-        'ip_service': 'IP',
-        'telephony': 'Telephony',
-        'private_cloud': 'Private Cloud',
-        'private_cloud_host': 'Private Cloud Hosts',
-        'private_cloud_datastore': 'Private Cloud Datastores',
-        'license': 'Licenses',
-        'backup': 'Backup',
-        'other': 'Other'
-      };
-
       const result = data.map(row => ({
-        name: labels[row.resource_type] || row.resource_type || 'Other',
+        name: RESOURCE_TYPE_LABELS[row.resource_type] || row.resource_type || 'Other',
         resource_type: row.resource_type || 'other',
         value: Math.round(row.total * 100) / 100,
-        color: colors[row.resource_type] || colors['other'],
+        color: RESOURCE_TYPE_COLORS[row.resource_type] || RESOURCE_TYPE_COLORS['other'],
         detailsCount: row.details_count,
         serviceCount: row.service_count
       }));

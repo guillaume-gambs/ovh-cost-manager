@@ -17,6 +17,13 @@ const Jsonfile = require('jsonfile');
 const db = require('./db');
 const { classifyService, classifyResourceTypeFromDomain } = require('./classify');
 
+// Skip this run if another import (cron or manual resync) is in progress.
+// Checked first, before --full clears the database.
+if (db.importLog.isRunning()) {
+  console.log('Another import is already running. Skipping this run.');
+  process.exit(0);
+}
+
 // Load configuration (credentials + settings)
 const APP_DATA = path.resolve(os.homedir(), 'my-ovh-bills');
 const CONFIG_PATHS = [
@@ -1122,7 +1129,7 @@ async function runImport(params) {
             if (resourceTypeMap && resourceTypeMap[d.domain]) {
               resource_type = resourceTypeMap[d.domain];
             } else {
-              resource_type = classifyResourceTypeFromDomain(d.domain);
+              resource_type = classifyResourceTypeFromDomain(d.domain, d.description);
             }
             // Projet cloud
             const isCloudProject = projectMap.hasOwnProperty(d.domain);
