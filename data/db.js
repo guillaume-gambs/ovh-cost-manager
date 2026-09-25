@@ -1010,10 +1010,13 @@ function computeInstanceCosts(db, projectId, fromDate, toDate) {
  * @param {Array<Object>} rows    mutated in place: `total` and `allocated`
  * @param {number} total          amount to spread
  * @param {Function} weightOf     row -> weight (0 or less excludes the row)
- * @returns {boolean}             false when nothing could be spread
+ * @returns {boolean}             false when nothing could be spread (no weight,
+ *                                or a credit note, which is never spread): the
+ *                                caller keeps the line on a row of its own
  */
 function allocateProRata(rows, total, weightOf) {
-  if (!(total > 0)) return true;
+  if (!total) return true;
+  if (total < 0) return false;
 
   const eligible = rows.filter(r => weightOf(r) > 0);
   const totalWeight = eligible.reduce((sum, r) => sum + weightOf(r), 0);
@@ -1060,14 +1063,14 @@ function allocateColdArchive(db, rows, projectId, fromDate, toDate) {
   `).get(projectId, fromDate, toDate);
 
   const coldArchiveTotal = coldArchive?.total || 0;
-  if (coldArchiveTotal <= 0) return;
+  if (!coldArchiveTotal) return;
 
   const archived = rows.filter(r => r.status === 'archived' && r.objects_size > 0);
   const archivedSize = archived.reduce((sum, r) => sum + r.objects_size, 0);
 
-  // No inventory to spread it over: keep the bill line visible on its own row
-  // so the panel total still matches the bill.
-  if (!archivedSize) {
+  // No inventory to spread it over, or a credit note (never spread): keep the
+  // bill line visible on its own row so the panel total still matches the bill.
+  if (!archivedSize || coldArchiveTotal < 0) {
     rows.push({
       name: 'Stockage Cold Archive',
       region: null,

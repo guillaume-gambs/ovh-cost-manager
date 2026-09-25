@@ -103,6 +103,46 @@ describe('allocateProRata', () => {
 
     expect(rows).toEqual([{ size: 0 }, { size: null }]);
   });
+
+  test('does not spread a credit note, so the caller keeps it on a row of its own', () => {
+    const rows = [{ size: 1 }, { size: 3 }];
+
+    expect(db.allocateProRata(rows, -12.5, bySize)).toBe(false);
+
+    expect(rows).toEqual([{ size: 1 }, { size: 3 }]);
+  });
+});
+
+describe('credit notes', () => {
+  test('a credit on an extra disk line stays on a row of its own', () => {
+    db.cloudDetails.upsertVolume({
+      id: 'vol-1', project_id: PROJECT, name: 'data', region: 'GRA5', type: 'classic', size_gb: 100,
+      status: 'in-use', bootable: 0, attached_to: 'inst-1', plan_code: null, created_at: null
+    });
+    seedBillLine('Disques supplémentaires à gra5 de type classic', -4.2);
+
+    const volumes = db.cloudDetails.getVolumesByProject(PROJECT, FROM, TO);
+
+    expect(volumes.map(v => [v.name, v.total])).toEqual([
+      ['data', 0],
+      ['Disques supplémentaires à gra5 de type classic', -4.2]
+    ]);
+  });
+
+  test('a Cold Archive credit stays on a row of its own', () => {
+    db.cloudDetails.upsertBucket({
+      id: `${PROJECT}:GRA:cold`, project_id: PROJECT, name: 'cold', region: 'GRA', storage_class: 'Cold Archive',
+      status: 'archived', objects_count: 1, objects_size: 1000, created_at: null
+    });
+    seedBillLine('Stockage Cold Archive', -2.5);
+
+    const buckets = db.cloudDetails.getBucketsByProject(PROJECT, FROM, TO);
+
+    expect(buckets.map(b => [b.name, b.total])).toEqual([
+      ['cold', 0],
+      ['Stockage Cold Archive', -2.5]
+    ]);
+  });
 });
 
 describe('snapshot cost', () => {
