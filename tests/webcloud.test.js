@@ -110,13 +110,14 @@ describe('classifyWebCloud', () => {
 describe('webCloud items and summary', () => {
   const FROM = '2026-01-01';
   const TO = '2026-12-31';
+  const PROJECT_ID = '0123456789abcdef0123456789abcdef';
   let db;
   let dataDir;
 
-  const line = (id, domain, description, price, resourceType) => ({
+  const line = (id, domain, description, price, resourceType, projectId = null) => ({
     id,
     bill_id: 'FR0001',
-    project_id: null,
+    project_id: projectId,
     domain,
     description,
     quantity: 1,
@@ -132,15 +133,18 @@ describe('webCloud items and summary', () => {
     process.env.DATA_DIR = dataDir;
     db = require('../data/db');
 
+    db.projects.upsert({ id: PROJECT_ID, name: 'my-project', description: null, status: 'ok', created_at: null });
     db.bills.upsert({
-      id: 'FR0001', date: '2026-03-15', price_without_tax: 40.5, price_with_tax: 48.6,
-      tax: 8.1, currency: 'EUR', pdf_url: null, html_url: null
+      id: 'FR0001', date: '2026-03-15', price_without_tax: 45.5, price_with_tax: 54.6,
+      tax: 9.1, currency: 'EUR', pdf_url: null, html_url: null
     });
     db.details.insertMany([
       line('L1', 'example.com', 'example.com - .com demande de renouvellement - 12 mois', 10.5, 'domain'),
       line('L2', 'example.net', 'example.net - .net restauration - 12 mois', 20, 'domain'),
       line('L3', 'example.ovh', 'Frais de mise en service', 3, 'web_cloud'),
-      line('L4', 'misc-service-1', 'Frais de gestion', 7, 'other')
+      line('L4', 'misc-service-1', 'Frais de gestion', 7, 'other'),
+      // Imported before the resource_type column existed, hence NULL
+      line('L5', PROJECT_ID, 'Stockage Standard - Bucket hosting-backups sur la région gra', 5, null, PROJECT_ID)
     ]);
   });
 
@@ -161,5 +165,10 @@ describe('webCloud items and summary', () => {
   // 10.5 + 20 + 3: the unrecognised 'other' line stays in the Infrastructure tab
   test('adds up every domain and web_cloud line, but no unrecognised other line', () => {
     expect(db.webCloud.getSummary(FROM, TO).total).toBe(33.5);
+  });
+
+  // The bucket name reads like hosting, the project_id says Public Cloud
+  test('leaves out Public Cloud lines whose resource_type is NULL', () => {
+    expect(db.webCloud.getItems(FROM, TO).find(i => i.name === PROJECT_ID)).toBeUndefined();
   });
 });

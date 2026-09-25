@@ -1172,6 +1172,7 @@ const webCloudOps = {
       JOIN bills b ON d.bill_id = b.id
       WHERE b.date >= ? AND b.date <= ?
         AND COALESCE(d.resource_type, 'other') IN ('domain', 'other', 'web_cloud')
+        AND d.project_id IS NULL
     `).all(fromDate, toDate);
 
     // The Infrastructure tab leaves the 'domain' and 'web_cloud' types out, so
