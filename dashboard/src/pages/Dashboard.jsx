@@ -82,6 +82,14 @@ const shiftMonths = (isoDate, months) => {
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-01`;
 };
 
+const formatMonthLabel = (yearMonth, language = 'fr') => {
+  if (!yearMonth) return '';
+  const [year, month] = yearMonth.split('-').map(Number);
+  if (!year || !month) return yearMonth;
+  const locale = language === 'en' ? 'en-US' : 'fr-FR';
+  return new Date(year, month - 1, 1).toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+};
+
 // Web Cloud families, in display order. Each one gets a card and a table.
 const WEB_CLOUD_CATEGORIES = [
   { key: 'domain', labelKey: 'domains', color: 'text-violet-600' },
@@ -1492,7 +1500,7 @@ export default function Dashboard() {
               {language === 'en' ? 'Rolling 12 months' : '12 mois glissants'}
               {webCloudPeriod && (
                 <span className="ml-1 text-gray-400">
-                  ({formatYearMonth(webCloudPeriod.from.slice(0, 7), language)} → {formatYearMonth(webCloudPeriod.to.slice(0, 7), language)})
+                  ({formatMonthLabel(webCloudPeriod.from.slice(0, 7), language)} → {formatMonthLabel(webCloudPeriod.to.slice(0, 7), language)})
                 </span>
               )}
               <span className="ml-2 text-gray-400">
