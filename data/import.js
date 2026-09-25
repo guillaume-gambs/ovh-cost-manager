@@ -723,18 +723,22 @@ async function detectStorageClass(projectId, regionName, bucketName) {
  *   storage-s3-coldarchive                     -> /region/{r}/coldArchive
  * The legacy Swift containers (/cloud/project/{id}/storage) are a different
  * product and are not covered here.
+ *
+ * Throws when a call still fails after its retries, so that a partial list
+ * never replaces the stored inventory.
  */
 async function fetchObjectStorageBuckets(projectId) {
   const regions = await withRetry(() => ovh.requestPromised('GET', `/cloud/project/${projectId}/region`));
   const buckets = [];
 
-  await runInBatches(regions || [], async (regionName) => {
+  const regionResults = await runInBatches(regions || [], async (regionName) => {
     // Legacy region aliases (GRA1, SBG5, ...) are listed but have no detail route
     let region;
     try {
-      region = await ovh.requestPromised('GET', `/cloud/project/${projectId}/region/${regionName}`);
+      region = await withRetry(() => ovh.requestPromised('GET', `/cloud/project/${projectId}/region/${regionName}`));
     } catch (err) {
-      return;
+      if (err.error === 404) return;
+      throw err;
     }
     const services = (region?.services || [])
       .filter(s => s.status === 'UP')
@@ -778,35 +782,35 @@ async function fetchObjectStorageBuckets(projectId) {
     }
   });
 
+  // runInBatches logs and swallows the error of each failed item. A region left
+  // out would have its buckets deleted from the stored inventory, so fail the
+  // whole fetch instead.
+  const regionFailure = regionResults.find(r => r?.error);
+  if (regionFailure) throw regionFailure.error;
+
   // Swift containers (Public Cloud Archive and plain object storage). Different
   // product, different route, and the list endpoint leaves `archive` null: only
   // the detail call tells a cold archive container from a regular one.
-  try {
-    const containers = await withRetry(() => ovh.requestPromised('GET', `/cloud/project/${projectId}/storage`));
-    await runInBatches(containers || [], async (container) => {
-      let detail = null;
-      try {
-        detail = await ovh.requestPromised('GET', `/cloud/project/${projectId}/storage/${container.id}`);
-      } catch (err) {
-        // keep the list entry, just without the archive flag
-      }
-      const isArchive = (detail?.archive ?? container.archive) === true;
-      buckets.push({
-        id: `${projectId}:${container.region}:swift:${container.name}`,
-        project_id: projectId,
-        name: container.name,
-        region: container.region || '',
-        storage_class: isArchive ? 'Public Cloud Archive' : 'Swift',
-        status: null,
-        objects_count: container.storedObjects ?? null,
-        objects_size: container.storedBytes ?? null,
-        created_at: null
-      });
+  const containers = await withRetry(() => ovh.requestPromised('GET', `/cloud/project/${projectId}/storage`));
+  const containerResults = await runInBatches(containers || [], async (container) => {
+    const detail = await withRetry(() => ovh.requestPromised('GET', `/cloud/project/${projectId}/storage/${container.id}`));
+    const isArchive = (detail?.archive ?? container.archive) === true;
+    buckets.push({
+      id: `${projectId}:${container.region}:swift:${container.name}`,
+      project_id: projectId,
+      name: container.name,
+      region: container.region || '',
+      storage_class: isArchive ? 'Public Cloud Archive' : 'Swift',
+      status: null,
+      objects_count: container.storedObjects ?? null,
+      objects_size: container.storedBytes ?? null,
+      created_at: null
     });
-    console.log(`    ${(containers || []).length} swift containers`);
-  } catch (err) {
-    console.error(`    Error fetching swift containers: ${err.message}`);
-  }
+  });
+  // Same as the regions: a container without its detail cannot be classified
+  const containerFailure = containerResults.find(r => r?.error);
+  if (containerFailure) throw containerFailure.error;
+  console.log(`    ${(containers || []).length} swift containers`);
 
   return buckets;
 }
@@ -952,7 +956,7 @@ async function importCloudDetails(projectIds) {
       });
       console.log(`    ${(volumes || []).length} volumes`);
     } catch (err) {
-      console.error(`    Error fetching volumes: ${err.message}`);
+      console.warn(`    Volume fetch failed, keeping the stored volumes: ${err.message || err.error}`);
     }
 
     // Instance snapshots (images)
@@ -976,7 +980,7 @@ async function importCloudDetails(projectIds) {
       });
       console.log(`    ${(snapshots || []).length} snapshots`);
     } catch (err) {
-      console.error(`    Error fetching snapshots: ${err.message}`);
+      console.warn(`    Snapshot fetch failed, keeping the stored snapshots: ${err.message || err.error}`);
     }
 
     // Object storage buckets (S3 + Cold Archive)
@@ -992,7 +996,7 @@ async function importCloudDetails(projectIds) {
       });
       console.log(`    ${buckets.length} object storage buckets`);
     } catch (err) {
-      console.error(`    Error fetching object storage: ${err.message}`);
+      console.warn(`    Object storage fetch failed, keeping the stored buckets: ${err.message || err.error}`);
     }
   }
 }
@@ -1176,6 +1180,10 @@ async function runImport(params) {
   }
 }
 
-// Run
-const params = parseArgs();
-runImport(params);
+// Run, unless required by the tests
+if (require.main === module) {
+  const params = parseArgs();
+  runImport(params);
+}
+
+module.exports = { importCloudDetails };
