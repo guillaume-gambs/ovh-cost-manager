@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { spawn } = require('child_process');
 
 // Import database module from data workspace
 const db = require('../data/db');
@@ -130,8 +131,10 @@ const apiLimiter = rateLimit({
   standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
   legacyHeaders: false, // Disable `X-RateLimit-*` headers
   skip: (req) => {
-    // Skip rate limiting for health checks
-    return req.path === '/api/health';
+    // Skip rate limiting for health checks. Use originalUrl: this limiter is
+    // mounted on '/api/', so req.path here is '/health' (prefix stripped),
+    // which made the previous '/api/health' check never match.
+    return (req.originalUrl || req.url).split('?')[0] === '/api/health';
   }
 });
 
@@ -143,6 +146,64 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+// Manual import trigger: hard-capped at one run per hour for everyone (shared
+// global bucket, not per-IP) to protect the OVH API. This is a functional
+// safeguard, applied even when the DoS rate limiting is disabled.
+// Note: in-memory window, so it resets if the server restarts.
+const importLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 1,
+  message: { error: 'syncRateLimited' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: () => 'global-manual-import',
+  // Only started runs (202) use the quota: a refused one (409, 500) does not
+  skipFailedRequests: true,
+  validate: false
+});
+
+// Shared resource-type presentation (used by by-resource-type and the
+// monthly-trend-by-category endpoints).
+const RESOURCE_TYPE_COLORS = {
+  'cloud_project': '#3b82f6',
+  'dedicated_server': '#ef4444',
+  'vps': '#f59e0b',
+  'storage': '#10b981',
+  'load_balancer': '#06b6d4',
+  'domain': '#8b5cf6',
+  'ip_service': '#ec4899',
+  'telephony': '#f97316',
+  'private_cloud': '#7c3aed',
+  'private_cloud_host': '#9333ea',
+  'private_cloud_datastore': '#a855f7',
+  'license': '#0891b2',
+  'backup': '#059669',
+  'support': '#64748b',
+  'telecom': '#d97706',
+  'web_cloud': '#2563eb',
+  'other': '#6b7280'
+};
+
+const RESOURCE_TYPE_LABELS = {
+  'cloud_project': 'Public Cloud',
+  'dedicated_server': 'Dedicated Servers',
+  'vps': 'VPS',
+  'storage': 'Storage',
+  'load_balancer': 'Load Balancers',
+  'domain': 'Domains',
+  'ip_service': 'IP',
+  'telephony': 'Telephony',
+  'private_cloud': 'Private Cloud',
+  'private_cloud_host': 'Private Cloud Hosts',
+  'private_cloud_datastore': 'Private Cloud Datastores',
+  'license': 'Licenses',
+  'backup': 'Backup',
+  'support': 'Support',
+  'telecom': 'Telecom',
+  'web_cloud': 'Web Cloud',
+  'other': 'Other'
+};
 
 // Trust proxy headers (for reverse proxy/load balancer)
 if (rateLimitConfig.trustProxy) {
@@ -561,6 +622,48 @@ function registerRoutes() {
     }
   });
 
+  // Monthly trend broken down by resource type, shaped for a multi-line chart:
+  // { categories: [{key, label, color}], data: [{ yearMonth, <key>: total, ... }] }
+  app.get('/api/analysis/monthly-trend-by-category', (req, res) => {
+    try {
+      const months = parseInt(req.query.months) || 6;
+      const rows = db.analysis.monthlyTrendByResourceType(months);
+
+      // Total per resource_type to order categories by spend.
+      const totals = {};
+      const monthsSet = new Set();
+      for (const r of rows) {
+        totals[r.resource_type] = (totals[r.resource_type] || 0) + r.total;
+        monthsSet.add(r.month);
+      }
+
+      const categories = Object.keys(totals)
+        .sort((a, b) => totals[b] - totals[a])
+        .map(key => ({
+          key,
+          label: RESOURCE_TYPE_LABELS[key] || key,
+          color: RESOURCE_TYPE_COLORS[key] || RESOURCE_TYPE_COLORS['other']
+        }));
+
+      // One row per month with every category present (0 when absent) so lines
+      // stay continuous.
+      const byMonth = {};
+      for (const ym of monthsSet) {
+        byMonth[ym] = { yearMonth: ym };
+        for (const c of categories) byMonth[ym][c.key] = 0;
+      }
+      for (const r of rows) {
+        byMonth[r.month][r.resource_type] = Math.round(r.total * 100) / 100;
+      }
+
+      const data = Object.values(byMonth).sort((a, b) => a.yearMonth.localeCompare(b.yearMonth));
+
+      res.json({ categories, data });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ========================
   // Summary Endpoint
   // ========================
@@ -613,8 +716,42 @@ function registerRoutes() {
 
       res.json({
         latest,
+        // Same rule as the resync route; the dashboard polls while it is true
+        running: db.importLog.isRunning(),
         history: all
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manual resync: spawn a differential import in the background.
+  // Rate-limited to once per hour (importLimiter) and guarded against
+  // overlapping a run already in progress.
+  app.post('/api/import/run', importLimiter, (req, res) => {
+    try {
+      // IMPORT_ENABLED=false turns off manual imports as well as the cron
+      if (process.env.IMPORT_ENABLED === 'false') {
+        return res.status(409).json({ error: 'syncDisabled' });
+      }
+      if (db.importLog.isRunning()) {
+        return res.status(409).json({ error: 'syncRunning' });
+      }
+
+      // Same options as the cron (scripts/cron-import.sh): --diff plus
+      // IMPORT_FLAGS split on spaces, --all by default
+      const flags = (process.env.IMPORT_FLAGS || '--all').split(/\s+/).filter(Boolean);
+      const importScript = path.resolve(__dirname, '..', 'data', 'import.js');
+      const child = spawn(process.execPath, [importScript, '--diff', ...flags], {
+        detached: true,
+        // Keep the import output, errors included, in the server logs
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: process.env
+      });
+      child.on('error', (err) => console.error('Manual import spawn failed:', err.message));
+      child.unref();
+
+      res.status(202).json({ started: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1059,45 +1196,11 @@ function registerRoutes() {
 
       const data = db.inventory.byResourceType(from, to);
 
-      const colors = {
-        'cloud_project': '#3b82f6',
-        'dedicated_server': '#ef4444',
-        'vps': '#f59e0b',
-        'storage': '#10b981',
-        'load_balancer': '#06b6d4',
-        'domain': '#8b5cf6',
-        'ip_service': '#ec4899',
-        'telephony': '#f97316',
-        'private_cloud': '#7c3aed',
-        'private_cloud_host': '#9333ea',
-        'private_cloud_datastore': '#a855f7',
-        'license': '#0891b2',
-        'backup': '#059669',
-        'other': '#6b7280'
-      };
-
-      const labels = {
-        'cloud_project': 'Public Cloud',
-        'dedicated_server': 'Dedicated Servers',
-        'vps': 'VPS',
-        'storage': 'Storage',
-        'load_balancer': 'Load Balancers',
-        'domain': 'Domains',
-        'ip_service': 'IP',
-        'telephony': 'Telephony',
-        'private_cloud': 'Private Cloud',
-        'private_cloud_host': 'Private Cloud Hosts',
-        'private_cloud_datastore': 'Private Cloud Datastores',
-        'license': 'Licenses',
-        'backup': 'Backup',
-        'other': 'Other'
-      };
-
       const result = data.map(row => ({
-        name: labels[row.resource_type] || row.resource_type || 'Other',
+        name: RESOURCE_TYPE_LABELS[row.resource_type] || row.resource_type || 'Other',
         resource_type: row.resource_type || 'other',
         value: Math.round(row.total * 100) / 100,
-        color: colors[row.resource_type] || colors['other'],
+        color: RESOURCE_TYPE_COLORS[row.resource_type] || RESOURCE_TYPE_COLORS['other'],
         detailsCount: row.details_count,
         serviceCount: row.service_count
       }));
@@ -1205,7 +1308,13 @@ function registerRoutes() {
 
   app.get('/api/projects/:id/instances', (req, res) => {
     try {
-      const instances = db.cloudDetails.getInstancesByProject(req.params.id);
+      // from/to are optional: without them the list carries no cost
+      const { from, to } = req.query;
+      if (from || to) {
+        const validation = validateDateRange(from, to);
+        if (!validation.valid) return res.status(400).json({ error: validation.error });
+      }
+      const instances = db.cloudDetails.getInstancesByProject(req.params.id, from, to);
       res.json(instances);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -1227,13 +1336,98 @@ function registerRoutes() {
       const validation = validateDateRange(from, to);
       if (!validation.valid) return res.status(400).json({ error: validation.error });
       const buckets = db.cloudDetails.getBucketsByProject(req.params.id, from, to);
-      // La requête SQL fournit déjà bucket (nom), class (type), total
+      // type is null when the inventory holds no class: bucket billed but not
+      // in the inventory (deleted, or inventory not imported), or class that
+      // could not be read (empty bucket, object listing refused). The bill line
+      // cannot tell, it reads "Stockage Standard" for every class. Do not guess
+      // a class here, the UI shows it as unknown.
       const result = buckets.map(b => ({
-        name: b.bucket,
-        type: b.class || 'Standard',
+        name: b.name,
+        type: b.storage_class,
+        region: b.region,
+        status: b.status,
+        objectsCount: b.objects_count,
+        objectsSize: b.objects_size,
+        createdAt: b.created_at,
+        inInventory: b.in_inventory === 1,
+        // true when the cost is a share of an aggregated bill line, not a
+        // figure billed under this bucket's name (Cold Archive)
+        allocated: b.allocated === true,
         total: b.total
       }));
       res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/projects/:id/volumes', (req, res) => {
+    try {
+      const { from, to } = req.query;
+      const validation = validateDateRange(from, to);
+      if (!validation.valid) return res.status(400).json({ error: validation.error });
+      const volumes = db.cloudDetails.getVolumesByProject(req.params.id, from, to).map(v => ({
+        id: v.id,
+        name: v.name,
+        region: v.region,
+        type: v.type,
+        sizeGb: v.size_gb,
+        status: v.status,
+        bootable: v.bootable === 1,
+        // null, not [], on a bill line with no volume behind it: its attachment
+        // is unknown, so it must not read as a detached volume
+        attachedTo: v.in_inventory === 0 ? null : (v.attached_to ? v.attached_to.split(',') : []),
+        createdAt: v.created_at,
+        allocated: v.allocated === true,
+        total: v.total
+      }));
+      res.json(volumes);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/projects/:id/snapshots', (req, res) => {
+    try {
+      const { from, to } = req.query;
+      const validation = validateDateRange(from, to);
+      if (!validation.valid) return res.status(400).json({ error: validation.error });
+      const snapshots = db.cloudDetails.getSnapshotsByProject(req.params.id, from, to).map(s => ({
+        id: s.id,
+        name: s.name,
+        region: s.region,
+        sizeGb: s.size_gb,
+        status: s.status,
+        visibility: s.visibility,
+        osType: s.os_type,
+        createdAt: s.created_at,
+        allocated: s.allocated === true,
+        total: s.total
+      }));
+      res.json(snapshots);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/projects/:id/savings-plans', (req, res) => {
+    try {
+      const { from, to } = req.query;
+      const validation = validateDateRange(from, to);
+      if (!validation.valid) return res.status(400).json({ error: validation.error });
+      const plans = db.cloudDetails.getSavingsPlansByProject(req.params.id, from, to).map(p => ({
+        id: p.id,
+        flavor: p.flavor,
+        duration: p.duration,
+        covered: p.covered,
+        flavorCovered: p.flavor_covered,
+        inventory: p.inventory,
+        months: p.months,
+        firstDate: p.first_date,
+        lastDate: p.last_date,
+        total: p.total
+      }));
+      res.json(plans);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

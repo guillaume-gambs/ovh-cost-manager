@@ -63,8 +63,19 @@ export const fetchMonthlyTrend = async (months = 6) => {
   return data;
 };
 
+export const fetchMonthlyTrendByCategory = async (months = 6) => {
+  const { data } = await api.get('/analysis/monthly-trend-by-category', { params: { months } });
+  return data;
+};
+
 export const fetchImportStatus = async () => {
   const { data } = await api.get('/import/status');
+  return data;
+};
+
+// Trigger a manual resync (differential import). Server caps this at once per hour.
+export const triggerImport = async () => {
+  const { data } = await api.post('/import/run');
   return data;
 };
 
@@ -147,8 +158,23 @@ export const fetchProjectConsumption = async (projectId, from, to) => {
   return data;
 };
 
-export const fetchProjectInstances = async (projectId) => {
-  const { data } = await api.get(`/projects/${projectId}/instances`);
+export const fetchProjectInstances = async (projectId, from, to) => {
+  const { data } = await api.get(`/projects/${projectId}/instances`, { params: { from, to } });
+  return data;
+};
+
+export const fetchProjectVolumes = async (projectId, from, to) => {
+  const { data } = await api.get(`/projects/${projectId}/volumes`, { params: { from, to } });
+  return data;
+};
+
+export const fetchProjectSnapshots = async (projectId, from, to) => {
+  const { data } = await api.get(`/projects/${projectId}/snapshots`, { params: { from, to } });
+  return data;
+};
+
+export const fetchProjectSavingsPlans = async (projectId, from, to) => {
+  const { data } = await api.get(`/projects/${projectId}/savings-plans`, { params: { from, to } });
   return data;
 };
 
