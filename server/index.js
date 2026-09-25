@@ -726,14 +726,8 @@ function registerRoutes() {
   // overlapping a run already in progress.
   app.post('/api/import/run', importLimiter, (req, res) => {
     try {
-      const latest = db.importLog.getLatest();
-      if (latest && latest.status === 'running') {
-        // Block only if the running entry is recent, so a crashed import that
-        // never wrote a terminal status does not lock the feature forever.
-        const startedMs = new Date(latest.started_at).getTime();
-        if (!Number.isNaN(startedMs) && Date.now() - startedMs < 30 * 60 * 1000) {
-          return res.status(409).json({ error: 'syncRunning' });
-        }
+      if (db.importLog.isRunning()) {
+        return res.status(409).json({ error: 'syncRunning' });
       }
 
       const importScript = path.resolve(__dirname, '..', 'data', 'import.js');

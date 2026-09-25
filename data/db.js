@@ -372,6 +372,21 @@ const importLogOps = {
   getAll: () => {
     const db = getDb();
     return db.prepare('SELECT * FROM import_log ORDER BY id DESC').all();
+  },
+
+  // An import is in progress when the latest entry is still 'running' and
+  // started less than 30 minutes ago (an older one is a crashed run).
+  // started_at is a UTC CURRENT_TIMESTAMP without timezone, so its age is
+  // computed in SQL against 'now', which is UTC too.
+  isRunning: () => {
+    const db = getDb();
+    const running = db.prepare(`
+      SELECT 1 FROM import_log
+      WHERE id = (SELECT MAX(id) FROM import_log)
+        AND status = 'running'
+        AND datetime(started_at) > datetime('now', '-30 minutes')
+    `).get();
+    return Boolean(running);
   }
 };
 
