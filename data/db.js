@@ -1,5 +1,5 @@
 const Database = require('better-sqlite3');
-const { classifyWebCloud } = require('./classify');
+const { classifyWebCloud, WEB_CLOUD_FAMILIES } = require('./classify');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -1216,7 +1216,7 @@ const webCloudOps = {
   getSummary: (fromDate, toDate) => {
     const items = webCloudOps.getItems(fromDate, toDate);
     const summary = {};
-    for (const category of ['domain', 'dns_zone', 'hosting', 'email', 'option']) {
+    for (const category of WEB_CLOUD_FAMILIES) {
       summary[category] = { count: 0, total: 0 };
     }
     for (const item of items) {

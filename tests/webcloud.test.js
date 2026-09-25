@@ -10,7 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { classifyWebCloud } = require('../data/classify');
+const { classifyWebCloud, WEB_CLOUD_FAMILIES } = require('../data/classify');
 
 describe('classifyWebCloud', () => {
   describe('domain names', () => {
@@ -105,6 +105,18 @@ describe('classifyWebCloud', () => {
       expect(classifyWebCloud(undefined)).toBeNull();
     });
   });
+
+  // The Web Cloud summary has one bucket per listed family
+  test('returns the families listed in WEB_CLOUD_FAMILIES', () => {
+    const oneLinePerFamily = [
+      'example.com - .com demande de renouvellement - 12 mois',
+      'example.com - Zone DNS - Renouvellement',
+      'Performance 1 renewal (12 months)',
+      'MX plan account rental for 12 months',
+      'CDN basic option rental for 12 months'
+    ];
+    expect(new Set(oneLinePerFamily.map(wording => classifyWebCloud(wording)))).toEqual(new Set(WEB_CLOUD_FAMILIES));
+  });
 });
 
 describe('webCloud items and summary', () => {
@@ -170,5 +182,13 @@ describe('webCloud items and summary', () => {
   // The bucket name reads like hosting, the project_id says Public Cloud
   test('leaves out Public Cloud lines whose resource_type is NULL', () => {
     expect(db.webCloud.getItems(FROM, TO).find(i => i.name === PROJECT_ID)).toBeUndefined();
+  });
+
+  // Adding up an item whose family has no bucket would throw
+  test('has a count and a total for every Web Cloud family', () => {
+    const summary = db.webCloud.getSummary(FROM, TO);
+    for (const family of WEB_CLOUD_FAMILIES) {
+      expect(summary[family]).toEqual({ count: expect.any(Number), total: expect.any(Number) });
+    }
   });
 });

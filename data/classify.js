@@ -169,6 +169,10 @@ function classifyResourceTypeFromDomain(domain) {
   return 'other';
 }
 
+// Families classifyWebCloud() returns. db.js builds the Web Cloud summary from
+// this list, so a new family has to be added here.
+const WEB_CLOUD_FAMILIES = ['domain', 'dns_zone', 'hosting', 'email', 'option'];
+
 /**
  * Classify a Web Cloud bill line into a family.
  *
@@ -180,7 +184,7 @@ function classifyResourceTypeFromDomain(domain) {
  *
  * @param {string} description - bill line description
  * @param {string} domain - bill line domain (service identifier)
- * @returns {string|null} 'domain' | 'dns_zone' | 'hosting' | 'email' | 'option', null when not Web Cloud
+ * @returns {string|null} one of WEB_CLOUD_FAMILIES, null when not Web Cloud
  */
 function classifyWebCloud(description, domain = '') {
   const desc = (description || '').toLowerCase();
@@ -212,4 +216,4 @@ function classifyWebCloud(description, domain = '') {
   return null;
 }
 
-module.exports = { classifyService, classifyResourceTypeFromDomain, classifyWebCloud };
+module.exports = { classifyService, classifyResourceTypeFromDomain, classifyWebCloud, WEB_CLOUD_FAMILIES };
