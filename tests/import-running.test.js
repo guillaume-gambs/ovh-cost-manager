@@ -6,7 +6,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 let db;
 let dataDir;
@@ -93,5 +93,33 @@ describe('importLog.isRunning', () => {
       startImportMinutesAgo(31);
       expect(isRunningInTimezone(timezone)).toBe(false);
     });
+  });
+});
+
+describe('data/import.js', () => {
+  const importScript = path.join(__dirname, '..', 'data', 'import.js');
+  const noOvhApi = path.join(__dirname, 'fixtures', 'no-ovh-api.js');
+  const skipMessage = /already running/i;
+
+  // Run a differential import the way the cron does. HOME points to the
+  // throwaway directory, so no OVH credentials can be found there either.
+  function runImport() {
+    return spawnSync(process.execPath, ['--require', noOvhApi, importScript, '--diff', '--all'], {
+      env: { ...process.env, DATA_DIR: dataDir, HOME: dataDir },
+      encoding: 'utf8'
+    });
+  }
+
+  test('skips the run when another import is in progress', () => {
+    const runningId = db.importLog.start('differential', null, null);
+    const result = runImport();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(skipMessage);
+    expect(db.importLog.getLatest().id).toBe(runningId);
+  });
+
+  test('does not skip the run when no import is in progress', () => {
+    const result = runImport();
+    expect(result.stdout).not.toMatch(skipMessage);
   });
 });
