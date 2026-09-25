@@ -175,7 +175,6 @@ Create `config.json` at project root or `$HOME/my-ovh-bills/config.json`:
     "consumerKey": "YOUR_CONSUMER_KEY",
     "endpoint": "ovh-eu"
   },
-  "dataDir": "/app/data",
   "dashboard": {
     "budget": 50000,
     "currency": "EUR",
@@ -186,7 +185,7 @@ Create `config.json` at project root or `$HOME/my-ovh-bills/config.json`:
 
 > **Language options**: `"fr"` (French) or `"en"` (English). Can also be changed via the UI.
 
-> **`dataDir`**: Optional. Directory where the SQLite database is stored. Defaults to `data/` within the project. Can also be set via the `DATA_DIR` environment variable (which takes precedence).
+> **`dataDir`**: Optional. Directory where the SQLite database is stored. Defaults to `data/` within the project. Can also be set via the `DATA_DIR` environment variable (which takes precedence). The Docker Compose files set `DATA_DIR=/data`, where the `ocm-data` volume is mounted.
 
 > **Note**: Legacy format (`credentials.json` with flat structure) is still supported.
 
@@ -397,7 +396,7 @@ Access the dashboard at http://localhost:3001
 | --------------------------- | ---------------------------------------------------------------- | --------------- |
 | `OCM_PORT`                  | Exposed port                                                     | 3001            |
 | `AUTH_REQUIRED`             | Require auth headers                                             | false           |
-| `DATA_DIR`                  | Directory for database storage                                   | /app/data       |
+| `DATA_DIR`                  | Directory for database storage (where `ocm-data` is mounted)     | /data           |
 | `IMPORT_ENABLED`            | Enable automatic periodic import                                 | true            |
 | `IMPORT_INTERVAL`           | Seconds between imports                                          | 86400 (24h)     |
 | `IMPORT_FLAGS`              | Extra flags for import script                                    | --all           |
@@ -458,11 +457,15 @@ SSO_DOMAIN=example.com
 
 ### Volume Mounts
 
-| Volume               | Purpose                 | Mode     |
-| -------------------- | ----------------------- | -------- |
-| `ocm-data`           | SQLite database         | Both     |
-| `lemonldap-conf`     | LemonLDAP configuration | SSO only |
-| `lemonldap-sessions` | SSO session storage     | SSO only |
+| Volume               | Purpose                   | Mode     |
+| -------------------- | ------------------------- | -------- |
+| `ocm-data`           | SQLite database (`/data`) | Both     |
+| `lemonldap-conf`     | LemonLDAP configuration   | SSO only |
+| `lemonldap-sessions` | SSO session storage       | SSO only |
+
+> **Upgrading from 2.2.0 or earlier**: `ocm-data` used to be mounted on `/app/data`, where the image also ships the data-layer code. Docker copied that code into the volume on first start, so later image updates never reached it. Both compose files now mount the volume on `/data` and set `DATA_DIR=/data`: the existing volume and its database are picked up as is, just recreate the container as for any update. If you run the image with `docker run` or your own compose file, make the same change.
+>
+> Bill lines are classified at import time, so classification fixes only apply to bills imported afterwards. To reclassify past bills, re-import a period: `docker exec ovh-cost-manager node /app/data/import.js --from 2025-01-01 --all`. A `--diff` import skips bills already in the database, and `--full` clears it first.
 
 ### Production Deployment
 
