@@ -332,8 +332,10 @@ export default function Dashboard() {
   const { data: importStatus } = useQuery({
     queryKey: ['importStatus'],
     queryFn: fetchImportStatus,
-    // Poll while an import is in progress so the footer follows it
-    refetchInterval: (query) => (query.state.data?.running ? 5000 : false)
+    // Poll while an import is in progress so the footer follows it, every
+    // 30 s to stay well below the general API rate limit (100 requests per
+    // 15 minutes per IP by default)
+    refetchInterval: (query) => (query.state.data?.running ? 30000 : false)
   });
 
   // Manual resync
